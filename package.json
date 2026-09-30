@@ -1,0 +1,28 @@
+{
+  "name": "eventra-web",
+  "version": "2.0.0",
+  "description": "EVENTRA - Intelligent Event Management, Sponsorship & Predictive Crowd Safety Platform with PostgreSQL & Razorpay",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node --watch server/server.js",
+    "bundle": "python bundle.py",
+    "test": "node server/test-api.js"
+  },
+  "keywords": [
+    "event-management",
+    "postgresql",
+    "razorpay",
+    "analytics",
+    "crowd-monitoring"
+  ],
+  "author": "EVENTRA Team 23",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "nodemailer": "^10.0.12",
+    "pg": "^8.13.3"
+  }
+}

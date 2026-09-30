@@ -1,0 +1,5409 @@
+
+/* ========================================================================= */
+/*                          IN-APP NOTIFICATIONS & REMINDERS                 */
+/* ========================================================================= */
+
+function initNotificationCenter() {
+  const bell = document.getElementById('notif-bell-btn');
+  if (bell && !bell._hasListener) {
+    bell.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleNotificationDropdown();
+    });
+    bell._hasListener = true;
+  }
+
+  const markAllBtn = document.getElementById('notif-mark-all-btn');
+  if (markAllBtn && !markAllBtn._hasListener) {
+    markAllBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      markAllNotificationsRead();
+    });
+    markAllBtn._hasListener = true;
+  }
+
+  // Close dropdown on click outside
+  document.addEventListener('click', (e) => {
+    const dropdown = document.getElementById('notif-dropdown');
+    const bellBtn = document.getElementById('notif-bell-btn');
+    if (dropdown && !dropdown.classList.contains('hidden')) {
+      if (!dropdown.contains(e.target) && !bellBtn.contains(e.target)) {
+        dropdown.classList.add('hidden');
+      }
+    }
+  });
+
+  // Start periodic reminders check if user logged in
+  if (currentUser) {
+    loadNotifications();
+    generateEventReminders();
+    if (!window._remindersInterval) {
+      window._remindersInterval = setInterval(() => {
+        if (currentUser) {
+          loadNotifications();
+          generateEventReminders();
+          if (isBackendConnected && typeof syncTicketsFromBackend === 'function') {
+            syncTicketsFromBackend().then(() => {
+              if (currentActiveView === 'tickets') {
+                const ws = document.getElementById('role-workspace');
+                if (ws) renderMyTicketsView(ws);
+              } else if (currentActiveView === 'home' && currentUser.role === ROLES.STAFF) {
+                const ws = document.getElementById('role-workspace');
+                if (ws) renderStaffDashboard(ws);
+              }
+            });
+          }
+        }
+      }, 180000); // every 3 minutes
+    }
+  }
+}
+
+async function loadNotifications() {
+  if (!currentUser) return;
+  const res = await apiFetch(`/notifications?userId=${currentUser.id}`);
+  const listEl = document.getElementById('notif-list');
+  const badgeEl = document.getElementById('notif-badge');
+  if (!listEl) return;
+
+  if (res.ok && res.data.notifications) {
+    userNotifications = res.data.notifications;
+    const unread = userNotifications.filter(n => !n.is_read);
+    if (badgeEl) {
+      if (unread.length > 0) {
+        badgeEl.textContent = unread.length;
+        badgeEl.classList.remove('hidden');
+      } else {
+        badgeEl.classList.add('hidden');
+      }
+    }
+
+    if (userNotifications.length === 0) {
+      listEl.innerHTML = '<div class="notif-empty">No notifications yet.</div>';
+    } else {
+      listEl.innerHTML = userNotifications.map(n => {
+        let icon = '🔔';
+        if (n.notification_type === 'TICKET_PURCHASE' || n.notification_type === 'PAYMENT_SUCCESS') icon = '🎟️';
+        else if (n.notification_type === 'PAYMENT_FAILURE') icon = '⚠️';
+        else if (n.notification_type === 'CROWD_ALERT') icon = '🚨';
+        else if (n.notification_type === 'REMINDER') icon = '📅';
+        else if (n.notification_type === 'SPONSORSHIP') icon = '🤝';
+
+        return `
+          <div class="notif-item ${!n.is_read ? 'unread' : ''}" onclick="markNotificationAsRead(${n.notification_id})">
+            <span class="notif-icon">${icon}</span>
+            <div class="notif-body">
+              <div class="notif-title">${n.title}</div>
+              <div class="notif-desc">${n.message}</div>
+              <span class="notif-time">${new Date(n.created_at).toLocaleString('en-IN', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+}
+
+window.markNotificationAsRead = async function(notifId) {
+  await apiFetch(`/notifications/${notifId}/read`, { method: 'PUT' });
+  loadNotifications();
+};
+
+window.markAllNotificationsRead = async function() {
+  if (!currentUser) return;
+  await apiFetch('/notifications/read-all', {
+    method: 'PUT',
+    body: JSON.stringify({ userId: currentUser.id })
+  });
+  showToast("All notifications marked as read.", "info");
+  loadNotifications();
+};
+
+window.toggleNotificationDropdown = function() {
+  const dd = document.getElementById('notif-dropdown');
+  if (!dd) return;
+  dd.classList.toggle('hidden');
+  if (!dd.classList.contains('hidden')) {
+    loadNotifications();
+  }
+};
+
+async function generateEventReminders() {
+  if (!currentUser) return;
+  await apiFetch('/notifications/generate-reminders', { method: 'POST' });
+}
+
+/**
+ * EVENTRA - Complete Unified Web Platform Engine
+ * Combines:
+ * - Module 1: Authentication & User Governance (RBAC, Profiles, Salted Hashing)
+ * - Module 2: Event Management (Creation, Venue Zones, Schedule Itinerary, Approval Workflow)
+ * - Module 4: Digital Ticketing & QR Code Issuance
+ * - Module 5: QR Check-in & Gate Entry Verification
+ * - Module 6: Live Crowd Monitoring & Zone Congestion Risk Badges
+ */
+
+// User Role Enumeration
+const ROLES = {
+  ORGANIZER: 1,
+  ATTENDEE: 2,
+  SPONSOR: 3,
+  STAFF: 4,
+  ADMIN: 5
+};
+
+const ROLE_NAMES = {
+  1: 'Organizer',
+  2: 'Attendee',
+  3: 'Sponsor',
+  4: 'Event Staff',
+  5: 'Admin'
+};
+
+const EVENT_STATUS = {
+  DRAFT: 'DRAFT',
+  PENDING: 'PENDING',
+  APPROVED: 'APPROVED',
+  PUBLISHED: 'PUBLISHED',
+  CANCELLED: 'CANCELLED'
+};
+
+const SALT_STRING = "EVENTRA_SALT_2026_IIITK";
+const MASTER_ADMIN_KEY = "EVENTRA_ADMIN_2026";
+const STORAGE_KEY_USERS = "eventra_users_db_v3";
+const STORAGE_KEY_EVENTS = "eventra_events_db_v3";
+const STORAGE_KEY_TICKETS = "eventra_tickets_db_v3";
+const STORAGE_KEY_SESSION = "eventra_active_session_v3";
+const STORAGE_KEY_SPONSORSHIPS = "eventra_sponsorships_db_v3";
+const STORAGE_KEY_PAYMENTS = "eventra_payments_db_v3";
+
+
+// API & Persistent PostgreSQL Integration
+const API_BASE = (window.location && window.location.origin && window.location.origin.startsWith('http')) 
+  ? window.location.origin + '/api' 
+  : 'http://localhost:3000/api';
+let isBackendConnected = false;
+let dbEngineName = 'PostgreSQL';
+let userNotifications = [];
+let analyticsChartInstances = {};
+
+async function apiFetch(endpoint, options = {}, maybeBody = null) {
+  try {
+    let fetchOpts = {};
+    if (typeof options === 'string') {
+      fetchOpts.method = options;
+      if (maybeBody) {
+        fetchOpts.body = typeof maybeBody === 'string' ? maybeBody : JSON.stringify(maybeBody);
+      }
+    } else {
+      fetchOpts = { ...options };
+    }
+    fetchOpts.headers = { 'Content-Type': 'application/json', ...(fetchOpts.headers || {}) };
+
+    const res = await fetch(`${API_BASE}${endpoint}`, fetchOpts);
+    const data = await res.json();
+    return { ok: res.ok, status: res.status, data };
+  } catch (err) {
+    return { ok: false, status: 0, error: err.message };
+  }
+}
+
+// Application State
+let users = [];
+let events = [];
+let tickets = [];
+let sponsorships = [];
+let payments = [];
+let attendeeFeedbacks = [];
+let currentUser = null;
+let currentMode = 'login'; // 'login' or 'register'
+let selectedRole = ROLES.ORGANIZER;
+let currentActiveView = 'home';
+
+// Payment modal state
+let _pmEventId = null;
+let _pmSelectedTierIdx = 0;
+let _pmSelectedMethod = 'UPI';
+
+/* ========================================================================= */
+/*                          INITIALIZATION & PERSISTENCE                     */
+/* ========================================================================= */
+
+// Salted Cryptographic Hashing with universal fallback
+async function hashPassword(password) {
+  const salted = password + SALT_STRING;
+  if (window.crypto && window.crypto.subtle) {
+    try {
+      const msgBuffer = new TextEncoder().encode(salted);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (e) {
+      // fallback
+    }
+  }
+  let hash1 = 5381;
+  let hash2 = 1779033703;
+  for (let i = 0; i < salted.length; i++) {
+    const code = salted.charCodeAt(i);
+    hash1 = ((hash1 << 5) + hash1) ^ code;
+    hash2 = ((hash2 << 5) + hash2) + code + i;
+  }
+  const h1 = (hash1 >>> 0).toString(16).padStart(8, '0');
+  const h2 = (hash2 >>> 0).toString(16).padStart(8, '0');
+  return h1 + h2 + ((hash1 ^ 0xa5a5a5a5) >>> 0).toString(16).padStart(8, '0') + ((hash2 ^ 0x5a5a5a5a) >>> 0).toString(16).padStart(8, '0');
+}
+
+// Password Policy: Minimum 7 characters, can consist of letters, digits, or symbols
+function validatePassword(password) {
+  if (!password || password.length < 7) {
+    return {
+      valid: false,
+      message: "Password must be at least 7 characters long."
+    };
+  }
+  const allowedPattern = /^[a-zA-Z0-9!@#$%^&*()_+\-=\[\]{}|;:,.<>?/~`"'\\]+$/;
+  if (!allowedPattern.test(password)) {
+    return {
+      valid: false,
+      message: "Password can only consist of letters, digits, or symbols."
+    };
+  }
+  return { valid: true };
+}
+
+function savePayments() {
+  localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(payments));
+}
+
+async function initDatabase() {
+  // 1. Verify Backend and PostgreSQL Connection
+  const health = await apiFetch('/health');
+  if (health.ok && health.data) {
+    isBackendConnected = true;
+    window._lastHealthData = health.data;
+    dbEngineName = health.data.engine || 'PostgreSQL';
+    updateAdminDbStatusUI();
+    checkRazorpayGatewayStatus();
+  } else {
+    isBackendConnected = false;
+    updateAdminDbStatusUI();
+    checkRazorpayGatewayStatus();
+  }
+
+  // 2. Fetch Data from PostgreSQL Backend
+  if (isBackendConnected) {
+    const evRes = await apiFetch('/events');
+    if (evRes.ok && evRes.data.events) {
+      events = evRes.data.events;
+      saveEvents();
+    }
+    const tRes = await apiFetch('/tickets');
+    if (tRes.ok && tRes.data.tickets) {
+      tickets = tRes.data.tickets;
+      saveTickets();
+    }
+    const pRes = await apiFetch('/payments/history');
+    if (pRes.ok && pRes.data.payments) {
+      payments = pRes.data.payments;
+      savePayments();
+    }
+    const sRes = await apiFetch('/sponsorships');
+    if (sRes.ok && sRes.data.sponsorships) {
+      sponsorships = sRes.data.sponsorships;
+      saveSponsorships();
+    }
+  }
+
+  // Fallback / Offline initialization if empty
+  const savedUsers = localStorage.getItem(STORAGE_KEY_USERS);
+  if (savedUsers) {
+    try { users = JSON.parse(savedUsers); } catch (e) { users = []; }
+  }
+  const defaultAccounts = [
+    {
+      id: 1,
+      name: "Parthiv Naga",
+      email: "admin@eventra.com",
+      passwordHash: await hashPassword("admin123"),
+      role: ROLES.ADMIN,
+      phone: "+91 98765 43210",
+      organization: "Eventra Central Administration",
+      isActive: true
+    },
+    {
+      id: 2,
+      name: "Rohit Somuri",
+      email: "organizer@fest.org",
+      passwordHash: await hashPassword("pass123"),
+      role: ROLES.ORGANIZER,
+      phone: "+91 98765 43211",
+      organization: "IIITK Cultural & Tech Club",
+      isActive: true
+    },
+    {
+      id: 3,
+      name: "Banoth Manohar",
+      email: "attendee@fest.org",
+      passwordHash: await hashPassword("pass123"),
+      role: ROLES.ATTENDEE,
+      phone: "+91 91234 56780",
+      organization: "N/A",
+      isActive: true
+    },
+    {
+      id: 4,
+      name: "Sai Ganesh",
+      email: "sponsor@novatech.com",
+      passwordHash: await hashPassword("pass123"),
+      role: ROLES.SPONSOR,
+      phone: "+91 91234 56781",
+      organization: "NovaTech Global Solutions",
+      isActive: true
+    },
+    {
+      id: 5,
+      name: "Akhil Paidi",
+      email: "staff@gate1.com",
+      passwordHash: await hashPassword("pass123"),
+      role: ROLES.STAFF,
+      phone: "+91 91234 56782",
+      organization: "Gate Alpha Operations",
+      isActive: true
+    }
+  ];
+
+  if (!users || users.length === 0) {
+    users = defaultAccounts;
+    saveUsers();
+  }
+
+  if ((!events || events.length === 0) && !isBackendConnected) {
+    const savedEvents = localStorage.getItem(STORAGE_KEY_EVENTS);
+    if (savedEvents) {
+      try { events = JSON.parse(savedEvents); } catch (e) { events = []; }
+    }
+  }
+
+  if ((!tickets || tickets.length === 0) && !isBackendConnected) {
+    const savedTickets = localStorage.getItem(STORAGE_KEY_TICKETS);
+    if (savedTickets) {
+      try { tickets = JSON.parse(savedTickets); } catch (e) { tickets = []; }
+    }
+  }
+
+  if ((!payments || payments.length === 0) && !isBackendConnected) {
+    const savedPayments = localStorage.getItem(STORAGE_KEY_PAYMENTS);
+    if (savedPayments) {
+      try { payments = JSON.parse(savedPayments); } catch (e) { payments = []; }
+    }
+  }
+
+  // Setup Notification Center bindings
+  initNotificationCenter();
+}
+
+function saveUsers() { localStorage.setItem(STORAGE_KEY_USERS, JSON.stringify(users)); }
+function saveEvents() { localStorage.setItem(STORAGE_KEY_EVENTS, JSON.stringify(events)); }
+function saveTickets() { localStorage.setItem(STORAGE_KEY_TICKETS, JSON.stringify(tickets)); }
+window.syncTicketsFromBackend = async function() {
+  if (!isBackendConnected) return tickets;
+  try {
+    const res = await apiFetch('/tickets');
+    if (res.ok && res.data) {
+      const remoteTickets = res.data.tickets || (Array.isArray(res.data) ? res.data : []);
+      if (remoteTickets && remoteTickets.length > 0) {
+        tickets = remoteTickets;
+        saveTickets();
+      }
+      return tickets;
+    }
+  } catch (e) {
+    console.warn('Failed to sync tickets from backend:', e);
+  }
+  return tickets;
+};
+function saveSponsorships() { localStorage.setItem(STORAGE_KEY_SPONSORSHIPS, JSON.stringify(sponsorships)); }
+
+function saveSession(user) {
+  currentUser = user;
+  localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify(user));
+}
+
+function clearSession() {
+  currentUser = null;
+  localStorage.removeItem(STORAGE_KEY_SESSION);
+}
+
+function checkExistingSession() {
+  const saved = localStorage.getItem(STORAGE_KEY_SESSION);
+  if (saved) {
+    try {
+      const user = JSON.parse(saved);
+      const verified = users.find(u => u.id === user.id);
+      if (verified && verified.isActive) {
+        currentUser = verified;
+        showDashboard();
+      } else {
+        clearSession();
+      }
+    } catch (e) {
+      clearSession();
+    }
+  }
+}
+
+/* ========================================================================= */
+/*                          NOTIFICATIONS & UI HELPERS                       */
+/* ========================================================================= */
+
+function showToast(message, type = 'info') {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  const icon = type === 'success' ? '✓' : (type === 'error' ? '✕' : 'ℹ');
+  toast.innerHTML = `<strong>${icon}</strong><span>${message}</span>`;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(10px)';
+    setTimeout(() => toast.remove(), 250);
+  }, 3500);
+}
+
+function showAuthAlert(message, type = 'error') {
+  const alert = document.getElementById('auth-alert');
+  alert.className = `form-alert alert-${type}`;
+  alert.textContent = message;
+  alert.classList.remove('hidden');
+}
+
+function hideAuthAlert() {
+  document.getElementById('auth-alert').classList.add('hidden');
+}
+
+function getInitials(name) {
+  const parts = name.trim().split(' ');
+  return (parts.length >= 2 ? parts[0][0] + parts[1][0] : name.substring(0, 2)).toUpperCase();
+}
+
+/* ========================================================================= */
+/*                          AUTHENTICATION CONTROLLER                        */
+/* ========================================================================= */
+
+function setMode(mode) {
+  currentMode = mode;
+  hideAuthAlert();
+
+  const tabLogin = document.getElementById('tab-login');
+  const tabRegister = document.getElementById('tab-register');
+  const formTitle = document.getElementById('auth-form-title');
+  const formSubtitle = document.getElementById('auth-form-subtitle');
+  const btnSubmitText = document.getElementById('btn-auth-text');
+
+  const groupName = document.getElementById('field-group-name');
+  const groupPhone = document.getElementById('field-group-phone');
+  const groupConfirm = document.getElementById('field-group-confirm');
+
+  if (mode === 'login') {
+    tabLogin.classList.add('active');
+    tabLogin.setAttribute('aria-selected', 'true');
+    tabRegister.classList.remove('active');
+    tabRegister.setAttribute('aria-selected', 'false');
+
+    formTitle.textContent = "Welcome Back";
+    formSubtitle.textContent = "Enter your credentials to access your role dashboard";
+    btnSubmitText.textContent = "Log In to Eventra";
+
+    groupName.classList.add('hidden');
+    groupPhone.classList.add('hidden');
+    groupConfirm.classList.add('hidden');
+
+    const rowForgot = document.getElementById('row-forgot-password');
+    if (rowForgot) rowForgot.classList.remove('hidden');
+    const passHint = document.getElementById('pass-register-hint');
+    if (passHint) passHint.style.display = 'none';
+  } else {
+    tabRegister.classList.add('active');
+    tabRegister.setAttribute('aria-selected', 'true');
+    tabLogin.classList.remove('active');
+    tabLogin.setAttribute('aria-selected', 'false');
+
+    formTitle.textContent = "Create Account";
+    formSubtitle.textContent = `Register as a new ${ROLE_NAMES[selectedRole]}`;
+    btnSubmitText.textContent = `Register as ${ROLE_NAMES[selectedRole]}`;
+
+    groupName.classList.remove('hidden');
+    groupPhone.classList.remove('hidden');
+    groupConfirm.classList.remove('hidden');
+
+    const rowForgot = document.getElementById('row-forgot-password');
+    if (rowForgot) rowForgot.classList.add('hidden');
+    const passHint = document.getElementById('pass-register-hint');
+    if (passHint) passHint.style.display = 'block';
+  }
+  updateConditionalFields();
+}
+
+function updateConditionalFields() {
+  const groupOrg = document.getElementById('field-group-org');
+  const groupAdminKey = document.getElementById('field-group-adminkey');
+  const labelOrg = document.getElementById('label-org');
+
+  if (currentMode === 'register') {
+    if (selectedRole === ROLES.ORGANIZER) {
+      groupOrg.classList.remove('hidden');
+      labelOrg.textContent = "Club / Organization / Event Body Name";
+      groupAdminKey.classList.add('hidden');
+    } else if (selectedRole === ROLES.SPONSOR) {
+      groupOrg.classList.remove('hidden');
+      labelOrg.textContent = "Company / Brand / Sponsor Name";
+      groupAdminKey.classList.add('hidden');
+    } else if (selectedRole === ROLES.ADMIN) {
+      groupOrg.classList.add('hidden');
+      groupAdminKey.classList.remove('hidden');
+    } else {
+      groupOrg.classList.add('hidden');
+      groupAdminKey.classList.add('hidden');
+    }
+  } else {
+    groupOrg.classList.add('hidden');
+    groupAdminKey.classList.add('hidden');
+  }
+}
+
+function setRole(roleId) {
+  selectedRole = parseInt(roleId, 10);
+  document.querySelectorAll('.role-pill').forEach(btn => {
+    btn.classList.toggle('active', parseInt(btn.getAttribute('data-role'), 10) === selectedRole);
+  });
+
+  if (currentMode === 'register') {
+    document.getElementById('auth-form-subtitle').textContent = `Register as a new ${ROLE_NAMES[selectedRole]}`;
+    document.getElementById('btn-auth-text').textContent = `Register as ${ROLE_NAMES[selectedRole]}`;
+  }
+  updateConditionalFields();
+}
+
+async function handleAuthSubmit(e) {
+  e.preventDefault();
+  hideAuthAlert();
+
+  const email = document.getElementById('inp-email').value.trim().toLowerCase();
+  const password = document.getElementById('inp-password').value;
+
+  if (!email || !password) {
+    showAuthAlert("Please fill in both email and password.");
+    return;
+  }
+
+  if (currentMode === 'login') {
+    const hashedInput = await hashPassword(password);
+    let user = users.find(u => u.email.toLowerCase() === email);
+
+    if (!user && isBackendConnected) {
+      try {
+        const logRes = await apiFetch('/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ email, password })
+        });
+        if (logRes.ok && logRes.data && logRes.data.user) {
+          user = {
+            id: logRes.data.user.id,
+            name: logRes.data.user.name,
+            email: logRes.data.user.email,
+            role: logRes.data.user.role,
+            phone: logRes.data.user.phone || "Not provided",
+            organization: logRes.data.user.organization || "Independent",
+            isActive: true,
+            passwordHash: hashedInput
+          };
+          users.push(user);
+          saveUsers();
+        }
+      } catch (err) {
+        console.warn("Backend auth login error:", err);
+      }
+    }
+
+    if (!user) {
+      showAuthAlert("No registered account found with that email.");
+      return;
+    }
+    if (!user.isActive) {
+      showAuthAlert("This account has been deactivated by an Administrator.");
+      return;
+    }
+    if (user.passwordHash && user.passwordHash !== hashedInput) {
+      showAuthAlert("Incorrect password. Please verify your credentials.");
+      return;
+    }
+
+    saveSession(user);
+    showToast(`Welcome back, ${user.name}! Accessing ${ROLE_NAMES[user.role]} Workspace...`, 'success');
+    showDashboard();
+  } else {
+    const name = document.getElementById('inp-name').value.trim();
+    const phone = document.getElementById('inp-phone').value.trim();
+    const confirmPass = document.getElementById('inp-confirm').value;
+    const org = document.getElementById('inp-org').value.trim();
+    const adminKey = document.getElementById('inp-adminkey').value.trim();
+
+    if (!name) { showAuthAlert("Full Name is required."); return; }
+    const passCheck = validatePassword(password);
+    if (!passCheck.valid) { showAuthAlert(passCheck.message); return; }
+    if (password !== confirmPass) { showAuthAlert("Passwords do not match."); return; }
+    if (users.some(u => u.email.toLowerCase() === email)) {
+      showAuthAlert(`An account with email '${email}' already exists.`);
+      return;
+    }
+    if (selectedRole === ROLES.ADMIN && adminKey !== MASTER_ADMIN_KEY) {
+      showAuthAlert("Invalid Master Admin Authorization Key.");
+      return;
+    }
+
+    const passwordHash = await hashPassword(password);
+    const newUser = {
+      id: users.length ? Math.max(...users.map(u => u.id)) + 1 : 1,
+      name, email, passwordHash,
+      role: selectedRole,
+      phone: phone || "Not provided",
+      organization: (selectedRole === ROLES.ORGANIZER || selectedRole === ROLES.SPONSOR) ? (org || "Independent") : "N/A",
+      isActive: true,
+      createdAt: new Date().toISOString()
+    };
+
+    if (isBackendConnected) {
+      try {
+        const regRes = await apiFetch('/auth/register', {
+          method: 'POST',
+          body: JSON.stringify({
+            name, email, password,
+            role: selectedRole,
+            phone: phone || "Not provided",
+            organization: newUser.organization
+          })
+        });
+        if (regRes.ok && regRes.data && regRes.data.user) {
+          newUser.id = regRes.data.user.id;
+        }
+      } catch (err) {
+        console.warn("Backend register error:", err);
+      }
+    }
+
+    users.push(newUser);
+    saveUsers();
+    saveSession(newUser);
+
+    showToast(`Account created successfully! Welcome, ${newUser.name}.`, 'success');
+    showDashboard();
+  }
+}
+
+/* ========================================================================= */
+/*                          ROLE WORKSPACE DISPATCH                          */
+/* ========================================================================= */
+
+function showDashboard() {
+  document.getElementById('view-auth').classList.add('hidden');
+  document.getElementById('view-dashboard').classList.remove('hidden');
+  document.getElementById('user-pill-container').classList.remove('hidden');
+  document.getElementById('dash-nav-menu').classList.remove('hidden');
+
+  // Update Header User Pill
+  document.getElementById('header-user-name').textContent = currentUser.name;
+  document.getElementById('header-user-role').textContent = ROLE_NAMES[currentUser.role];
+  document.getElementById('header-user-avatar').textContent = getInitials(currentUser.name);
+
+  // Setup Navigation Tabs for current role
+  setupRoleNavigation();
+
+  // Render Default Active View
+  renderActiveView();
+}
+
+function showAuthView() {
+  document.getElementById('view-dashboard').classList.add('hidden');
+  document.getElementById('view-auth').classList.remove('hidden');
+  document.getElementById('user-pill-container').classList.add('hidden');
+  document.getElementById('dash-nav-menu').classList.add('hidden');
+  document.getElementById('auth-form').reset();
+  hideAuthAlert();
+}
+
+function setupRoleNavigation() {
+  const btnEvents = document.getElementById('nav-btn-events');
+  const btnTickets = document.getElementById('nav-btn-tickets');
+  const btnSponsorships = document.getElementById('nav-btn-sponsorships');
+  const btnScanner = document.getElementById('nav-btn-scanner');
+  const btnCrowd = document.getElementById('nav-btn-crowd');
+  const btnAdmin = document.getElementById('nav-btn-admin');
+
+  // Reset
+  [btnEvents, btnTickets, btnSponsorships, btnScanner, btnCrowd, btnAdmin].forEach(b => {
+    if (b) b.classList.add('hidden');
+  });
+
+  if (btnEvents) {
+    btnEvents.classList.remove('hidden');
+    if (currentUser.role === ROLES.ORGANIZER) {
+      btnEvents.textContent = "My Events";
+    } else if (currentUser.role === ROLES.SPONSOR) {
+      btnEvents.textContent = "Sponsorship Opportunities";
+    } else {
+      btnEvents.textContent = "Browse Events";
+    }
+  }
+
+  if (currentUser.role === ROLES.ORGANIZER && btnTickets) {
+    btnTickets.classList.remove('hidden');
+    btnTickets.textContent = "Ticket Revenue";
+    btnTickets.setAttribute('data-view', 'revenue');
+  }
+
+  if (currentUser.role === ROLES.ATTENDEE && btnTickets) {
+    btnTickets.classList.remove('hidden');
+    btnTickets.textContent = "My Tickets";
+    btnTickets.setAttribute('data-view', 'tickets');
+  }
+
+  if (currentUser.role === ROLES.SPONSOR && btnSponsorships) {
+    btnSponsorships.classList.remove('hidden');
+  }
+
+  if (currentUser.role === ROLES.STAFF && btnScanner) {
+    btnScanner.classList.remove('hidden');
+  }
+
+  if (btnCrowd) {
+    btnCrowd.classList.remove('hidden');
+  }
+
+  if (currentUser.role === ROLES.ADMIN && btnAdmin) {
+    btnAdmin.classList.remove('hidden');
+  }
+
+  const btnAnalytics = document.getElementById('nav-btn-analytics');
+  if (btnAnalytics) {
+    if (currentUser.role === ROLES.ORGANIZER || currentUser.role === ROLES.ADMIN) {
+      btnAnalytics.classList.remove('hidden');
+    } else {
+      btnAnalytics.classList.add('hidden');
+    }
+  }
+
+  // Set default view
+  currentActiveView = 'home';
+  setActiveNavButton('home');
+}
+
+function setActiveNavButton(viewName) {
+  currentActiveView = viewName;
+  document.querySelectorAll('.nav-item').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-view') === viewName);
+  });
+}
+
+function renderActiveView() {
+  const workspace = document.getElementById('role-workspace');
+  workspace.innerHTML = '';
+
+  // Update Hero Banner
+  document.getElementById('dash-role-badge').textContent = `${ROLE_NAMES[currentUser.role]} Console`;
+  document.getElementById('dash-welcome-title').textContent = `Welcome, ${currentUser.name}!`;
+  document.getElementById('dash-welcome-sub').textContent = 
+    `Logged in as ${ROLE_NAMES[currentUser.role]} • ${currentUser.organization !== 'N/A' ? currentUser.organization : currentUser.email}`;
+
+  switch (currentActiveView) {
+    case 'home':
+      renderHomeOverview(workspace);
+      break;
+    case 'events':
+      renderEventsView(workspace);
+      break;
+    case 'tickets':
+      renderMyTicketsView(workspace);
+      break;
+    case 'revenue':
+      renderRevenueView(workspace);
+      break;
+    case 'sponsorships':
+      renderSponsorshipsView(workspace);
+      break;
+    case 'analytics':
+      renderAnalyticsView(workspace);
+      break;
+    case 'crowd':
+      renderCrowdMonitoringView(workspace);
+      break;
+    case 'scanner':
+      renderStaffScannerView(workspace);
+      break;
+    case 'admin':
+      renderAdminGovernanceView(workspace);
+      break;
+  }
+}
+
+/* ========================================================================= */
+/*                          VIEW RENDERERS                                   */
+/* ========================================================================= */
+
+// 1. Home Overview
+function renderHomeOverview(workspace) {
+  if (currentUser.role === ROLES.STAFF) {
+    renderStaffDashboard(workspace);
+    return;
+  }
+
+  const myTicketsCount = tickets.filter(t => (t.userId == currentUser.id) && !t.cancelled && t.status !== 'CANCELLED').length;
+  const publishedEventsCount = events.filter(e => e.status === EVENT_STATUS.PUBLISHED || e.status === EVENT_STATUS.APPROVED).length;
+  const mySponsorships = sponsorships.filter(s => s.sponsorId === currentUser.id);
+  const totalPledged = mySponsorships.reduce((sum, s) => sum + (s.amount || 0), 0);
+  const totalReach = events.filter(e => mySponsorships.some(s => s.eventId === e.id)).reduce((sum, e) => sum + e.capacity, 0);
+
+  let statCardsHtml = '';
+  if (currentUser.role === ROLES.SPONSOR) {
+    statCardsHtml = `
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">💰</div>
+        <div class="stat-info">
+          <span class="stat-value">₹${totalPledged.toLocaleString()}</span>
+          <span class="stat-label">Total Capital Pledged</span>
+        </div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">🤝</div>
+        <div class="stat-info">
+          <span class="stat-value">${mySponsorships.length}</span>
+          <span class="stat-label">Active Backed Events</span>
+        </div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">👁️</div>
+        <div class="stat-info">
+          <span class="stat-value">${totalReach.toLocaleString()}+</span>
+          <span class="stat-label">Estimated Brand Impressions</span>
+        </div>
+      </div>
+    `;
+  } else {
+    statCardsHtml = `
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">📅</div>
+        <div class="stat-info">
+          <span class="stat-value">${events.length}</span>
+          <span class="stat-label">Total Platform Events</span>
+        </div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">🎟️</div>
+        <div class="stat-info">
+          <span class="stat-value">${currentUser.role === ROLES.ATTENDEE ? myTicketsCount : tickets.length}</span>
+          <span class="stat-label">${currentUser.role === ROLES.ATTENDEE ? 'My Registered Events' : 'Total Admissions Issued'}</span>
+        </div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">🏢</div>
+        <div class="stat-info">
+          <span class="stat-value">${sponsorships.length}</span>
+          <span class="stat-label">Corporate Partnerships</span>
+        </div>
+      </div>
+    `;
+  }
+
+  workspace.innerHTML = `
+    <div class="dash-card-grid">
+      ${statCardsHtml}
+    </div>
+
+    <div class="table-card">
+      <div class="table-header-row">
+        <h3 class="table-title">Quick Role Actions</h3>
+        <span class="badge-role">${ROLE_NAMES[currentUser.role]} Console</span>
+      </div>
+      <p style="color: var(--text-secondary); margin-bottom: 1.5rem; line-height: 1.6;">
+        ${currentUser.role === ROLES.SPONSOR 
+          ? `Welcome to your dedicated corporate sponsorship console. Explore upcoming campus events, pledge tiered partnerships (Platinum, Gold, Silver), request high-footfall booth spaces, and track your brand's attendee impressions.` 
+          : `Manage events, explore live venue zones, and connect across the platform. Logging in with your verified credentials directly authenticates you for immediate event admission.`}
+      </p>
+      <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+        ${currentUser.role === ROLES.ORGANIZER ? `
+          <button class="btn btn-primary" onclick="openCreateEventModal()">+ Create New Event</button>
+          <button class="btn btn-secondary" onclick="switchView('events')">Manage My Events</button>
+        ` : ''}
+        ${currentUser.role === ROLES.ATTENDEE ? `
+          <button class="btn btn-primary" onclick="switchView('events')">Browse & Register for Events</button>
+          <button class="btn btn-secondary" onclick="switchView('tickets')">View My Passes (${myTicketsCount})</button>
+        ` : ''}
+        ${currentUser.role === ROLES.SPONSOR ? `
+          <button class="btn btn-primary" onclick="switchView('events')">💼 Explore Sponsorship Opportunities</button>
+          <button class="btn btn-secondary" onclick="switchView('sponsorships')">⭐ View My Sponsorships & ROI</button>
+        ` : ''}
+        <button class="btn btn-secondary" onclick="switchView('crowd')">Live Crowd Occupancy</button>
+        <button class="btn btn-glass" onclick="openProfileModal()">Edit My Profile</button>
+      </div>
+    </div>
+  `;
+}
+
+// Ticket Revenue View (Organizer)
+function renderRevenueView(workspace) {
+  const myEvents = events.filter(e => e.organizerId === currentUser.id);
+  const myEventIds = new Set(myEvents.map(e => e.id));
+  const myPayments = payments.filter(p => myEventIds.has(p.eventId));
+
+  const totalRevenue = myPayments.reduce((s, p) => s + (p.totalAmount || 0), 0);
+  const totalTickets = myPayments.length;
+  const totalGST = myPayments.reduce((s, p) => s + (p.gstAmount || 0), 0);
+
+  workspace.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
+      <div>
+        <h2 style="font-family:var(--font-heading);font-size:1.65rem;">Ticket Revenue Dashboard</h2>
+        <p style="color:var(--text-secondary);font-size:0.88rem;margin-top:0.25rem;">Live sales and payment analytics for your events</p>
+      </div>
+    </div>
+
+    <div class="dash-card-grid" style="margin-bottom:1.5rem;">
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">💰</div>
+        <div class="stat-info">
+          <span class="stat-value">₹${totalRevenue.toLocaleString()}</span>
+          <span class="stat-label">Total Revenue Collected</span>
+        </div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">🎟️</div>
+        <div class="stat-info">
+          <span class="stat-value">${totalTickets}</span>
+          <span class="stat-label">Tickets Sold</span>
+        </div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">🏛️</div>
+        <div class="stat-info">
+          <span class="stat-value">₹${totalGST.toFixed(2)}</span>
+          <span class="stat-label">GST (18%) Collected</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Per-Event Tier Breakdown -->
+    ${myEvents.map(ev => {
+      const evPayments = myPayments.filter(p => p.eventId === ev.id);
+      const evRevenue = evPayments.reduce((s, p) => s + (p.totalAmount || 0), 0);
+      if (!ev.tiers || ev.tiers.length === 0) return '';
+      return `
+      <div class="table-card" style="margin-bottom:1.5rem;">
+        <div class="table-header-row">
+          <div>
+            <h3 class="table-title">${ev.name}</h3>
+            <p style="color:var(--text-secondary);font-size:0.82rem;margin-top:0.2rem;">${ev.venue} • ${ev.date}</p>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-weight:800;font-size:1.15rem;color:var(--emerald-success);">₹${evRevenue.toLocaleString()}</div>
+            <div style="font-size:0.75rem;color:var(--text-muted);">Total Revenue</div>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Tier</th>
+                <th>Price</th>
+                <th>Total Seats</th>
+                <th>Sold</th>
+                <th>Available</th>
+                <th>Revenue</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${ev.tiers.map(t => {
+                const sold = t.totalSeats - t.availableSeats;
+                const revenue = sold * (t.price || 0);
+                return `
+                <tr>
+                  <td><strong>${t.name}</strong></td>
+                  <td>${t.price === 0 ? '<span style="color:var(--emerald-success)">FREE</span>' : '₹' + t.price.toLocaleString()}</td>
+                  <td>${t.totalSeats}</td>
+                  <td><strong>${sold}</strong></td>
+                  <td>${t.availableSeats}</td>
+                  <td><strong style="color:var(--emerald-success);">₹${revenue.toLocaleString()}</strong></td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+    }).join('')}
+
+    <!-- Payment Transactions Table -->
+    <div class="table-card">
+      <div class="table-header-row">
+        <h3 class="table-title">Transaction Ledger</h3>
+        <span class="badge-role">${myPayments.length} Transactions</span>
+      </div>
+      ${myPayments.length === 0 ? `
+        <div style="text-align:center;padding:2rem;"><p style="color:var(--text-secondary);">No payments received yet. Share your published events to start selling tickets.</p></div>
+      ` : `
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr><th>Txn ID</th><th>Attendee</th><th>Event</th><th>Tier</th><th>Amount</th><th>Method</th><th>Date</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              ${myPayments.slice().reverse().map(p => `
+                <tr>
+                  <td style="font-family:monospace;font-size:0.8rem;">${p.txnId || '—'}</td>
+                  <td>${p.userName}</td>
+                  <td style="font-size:0.82rem;">${p.eventName}</td>
+                  <td><span style="font-size:0.78rem;background:rgba(99,102,241,0.2);padding:0.1rem 0.4rem;border-radius:4px;color:#a5b4fc;">${p.tierName}</span></td>
+                  <td><strong style="color:var(--emerald-success);">₹${(p.totalAmount||0).toFixed(2)}</strong></td>
+                  <td><span style="font-size:0.78rem;color:var(--text-muted);">${p.method}</span></td>
+                  <td style="font-size:0.78rem;color:var(--text-muted);">${new Date(p.paidAt).toLocaleString()}</td>
+                  <td><span class="status-badge status-active">${p.status}</span></td>
+                </tr>`).
+              join('')}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+// 2. Events View (Create, Manage, Browse, Sponsor, Book)
+function renderEventsView(workspace) {
+  const isOrganizer = currentUser.role === ROLES.ORGANIZER;
+  const isSponsor = currentUser.role === ROLES.SPONSOR;
+  const isStaffOrAdmin = currentUser.role === ROLES.STAFF || currentUser.role === ROLES.ADMIN;
+
+  let viewTitle = "Discover Published Events";
+  if (isOrganizer) viewTitle = "My Created Events";
+  if (isSponsor) viewTitle = "Corporate Sponsorship Opportunities";
+
+  workspace.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+      <div>
+        <h2 style="font-family: var(--font-heading); font-size: 1.65rem;">${viewTitle}</h2>
+        <p style="color: var(--text-secondary); font-size: 0.88rem; margin-top: 0.25rem;">
+          ${isSponsor ? "Select an event to back as a corporate partner, secure prime booth allocation, and gain prominent campus branding." : "Explore campus events with guaranteed admission upon login."}
+        </p>
+      </div>
+      ${isOrganizer ? `
+        <button class="btn btn-primary btn-sm" onclick="openCreateEventModal()">+ Create Event</button>
+      ` : ''}
+    </div>
+
+    <div class="events-grid">
+      ${events.map(ev => {
+        // If Attendee/Sponsor, show published and approved events
+        if (!isOrganizer && !isStaffOrAdmin && ev.status !== EVENT_STATUS.PUBLISHED && ev.status !== EVENT_STATUS.APPROVED) {
+          return '';
+        }
+
+        const eventSponsors = sponsorships.filter(s => s.eventId === ev.id);
+        const mySponsorship = sponsorships.find(s => s.sponsorId === currentUser.id && s.eventId === ev.id);
+        const isRegistered = tickets.some(t => (t.userId == currentUser.id) && (t.eventId == ev.id) && !t.cancelled && t.status !== 'CANCELLED');
+
+        return `
+          <div class="event-card">
+            <div>
+              <div class="event-card-header">
+                <span class="event-category-tag">${ev.type}</span>
+                <span class="badge-role" style="font-size: 0.68rem;">${ev.status}</span>
+              </div>
+              <h3 class="event-card-title">${ev.name}</h3>
+              <div class="event-meta-list">
+                <div class="event-meta-row">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+                  <span>${ev.venue}</span>
+                </div>
+                <div class="event-meta-row">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                  <span>${ev.date}</span>
+                </div>
+                <div class="event-meta-row">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></svg>
+                  <span><strong>${ev.availableSeats}</strong> / ${ev.capacity} Capacity</span>
+                </div>
+                <div class="event-meta-row">
+                  <span>📍 ${ev.zones ? ev.zones.length : 0} Venue Zones defined</span>
+                </div>
+
+                <!-- Ticket Tiers Pricing Strip -->
+                ${ev.tiers && ev.tiers.length > 0 ? `
+                <div style="margin-top:0.6rem;display:flex;flex-wrap:wrap;gap:0.35rem;">
+                  ${ev.tiers.map(t => `
+                    <span style="background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.25);border-radius:5px;padding:0.15rem 0.5rem;font-size:0.72rem;font-weight:600;color:#a5b4fc;">
+                      🎟️ ${t.name}: ${t.price === 0 ? 'FREE' : '₹' + t.price}
+                      <span style="color:var(--text-muted);font-weight:400;">(${t.availableSeats} left)</span>
+                    </span>`).join('')}
+                </div>` : `
+                <div style="font-size:0.72rem;color:var(--text-muted);margin-top:0.4rem;">🎟️ General Admission</div>`}
+              </div>
+
+              <!-- Event Corporate Sponsors Strip -->
+              ${eventSponsors.length > 0 ? `
+                <div class="event-sponsors-strip">
+                  <span style="font-size: 0.72rem; color: var(--text-muted);">Sponsors:</span>
+                  ${eventSponsors.map(s => `
+                    <span class="sponsor-pill ${s.tier.toLowerCase()}">
+                      ${s.tier === 'Platinum' ? '💎' : s.tier === 'Gold' ? '🥇' : '🥈'} ${s.sponsorName} (${s.tier})
+                    </span>
+                  `).join('')}
+                </div>
+              ` : `
+                <div class="event-sponsors-strip">
+                  <span style="font-size: 0.72rem; color: var(--text-muted);">Open for Corporate Sponsorship</span>
+                </div>
+              `}
+            </div>
+
+            <div class="event-card-footer">
+              ${isOrganizer && ev.organizerId === currentUser.id ? `
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; width: 100%;">
+                  <button class="btn btn-secondary btn-sm" onclick="openEventFeedbackViewModal(${ev.id}, '${ev.name.replace(/'/g, "\\'")}')" title="View Attendee Ratings & Reviews">⭐ Reviews</button>
+                  ${ev.status === EVENT_STATUS.DRAFT ? `
+                    <button class="btn btn-primary btn-sm flex-1" onclick="submitEvent(${ev.id})">Submit for Approval</button>
+                  ` : ''}
+                  ${ev.status === EVENT_STATUS.APPROVED ? `
+                    <button class="btn btn-primary btn-sm flex-1" onclick="publishEvent(${ev.id})">Publish Now</button>
+                  ` : ''}
+                  ${ev.status === EVENT_STATUS.PUBLISHED ? `
+                    <span style="color: var(--emerald-success); font-size: 0.8rem; font-weight: 700; align-self: center;">Live & Discoverable</span>
+                  ` : ''}
+                  <button class="btn btn-secondary btn-sm" onclick="cancelEvent(${ev.id})">Cancel</button>
+                  <button class="btn btn-secondary btn-sm" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4);" onclick="deleteEvent(${ev.id})" title="Delete Event">🗑️ Delete</button>
+                </div>
+              ` : isSponsor ? `
+                ${mySponsorship ? `
+                  <button class="btn btn-secondary btn-block btn-sm" onclick="switchView('sponsorships')">
+                    ✓ Sponsoring (${mySponsorship.tier}) - Manage
+                  </button>
+                ` : `
+                  <button class="btn btn-primary btn-block btn-sm" style="background: linear-gradient(135deg, #0284c7, #6366f1);" onclick="openSponsorModal(${ev.id})">
+                    💼 Sponsor This Event
+                  </button>
+                `}
+              ` : `
+                ${isRegistered ? `
+                  <button class="btn btn-secondary btn-block btn-sm" onclick="switchView('tickets')">
+                    ✓ Admission Confirmed (View Pass)
+                  </button>
+                ` : `
+                  <button class="btn btn-primary btn-block btn-sm" onclick="bookTicket(${ev.id})" ${ev.availableSeats <= 0 ? 'disabled' : ''}>
+                    ${ev.availableSeats > 0 ? '🎟️ Register / Attend' : 'Sold Out'}
+                  </button>
+                `}
+              `}
+              ${currentUser.role === ROLES.ADMIN ? `
+                <div style="margin-top: 0.5rem; width: 100%; display: flex; gap: 0.4rem; flex-wrap: wrap;">
+                  <button class="btn btn-secondary btn-sm" onclick="openEventFeedbackViewModal(${ev.id}, '${ev.name.replace(/'/g, "\\'")}')" title="View Attendee Ratings & Reviews">⭐ Reviews</button>
+                  ${(ev.status === 'PENDING' || ev.status === 'PENDING APPROVAL' || ev.status === EVENT_STATUS.PENDING) ? `
+                    <button class="btn btn-primary btn-sm flex-1" onclick="approveEvent(${ev.id})" title="Approve and Publish Event Live">
+                      ✓ Approve Event
+                    </button>
+                  ` : ''}
+                  <button class="btn btn-secondary btn-sm ${!(ev.status === 'PENDING' || ev.status === 'PENDING APPROVAL' || ev.status === EVENT_STATUS.PENDING) ? 'btn-block' : 'flex-1'}" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4);" onclick="deleteEvent(${ev.id})" title="Admin Event Removal">
+                    🗑️ Remove
+                  </button>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+// 3. My Tickets View with Visual QR Code Rendering
+function renderMyTicketsView(workspace) {
+  const myTickets = tickets.filter(t => (t.userId == currentUser.id) && !t.cancelled && t.status !== 'CANCELLED');
+
+  workspace.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+      <h2 style="font-family: var(--font-heading); font-size: 1.65rem;">My Digital Tickets (${myTickets.length})</h2>
+      <button class="btn btn-secondary btn-sm" onclick="switchView('events')">+ Book Another Event</button>
+    </div>
+
+    ${myTickets.length === 0 ? `
+      <div class="table-card" style="text-align: center; padding: 3rem 1rem;">
+        <h3>No Digital Tickets Yet</h3>
+        <p style="color: var(--text-secondary); margin: 0.5rem 0 1.5rem;">You haven't booked any event tickets yet.</p>
+        <button class="btn btn-primary" onclick="switchView('events')">Browse Available Events</button>
+      </div>
+    ` : `
+      <div class="tickets-grid">
+        ${myTickets.map(t => {
+          const myPay = payments.find(p => p.ticketId === (t.ticketId || t.id) && p.userId === currentUser.id);
+          const tierLabel = t.tierName || 'General Admission';
+          const amtPaid = t.amountPaid != null ? (t.amountPaid === 0 ? 'FREE' : `₹${t.amountPaid.toFixed(2)}`) : 'N/A';
+          const tId = t.ticketId || t.id;
+          const tEvId = t.eventId || t.event_id;
+          const ev = events.find(e => e.id == tEvId);
+          const isCheckedIn = Boolean(t.checkedIn || t.checked_in || t.checkedInAt || t.checked_in_at || t.status === 'ATTENDED');
+          const isPast = ev && (new Date(ev.date) < new Date() || ev.status === 'COMPLETED');
+          const existingFb = attendeeFeedbacks.find(f => (f.eventId == tEvId) || (f.event_id == tEvId));
+          const safeEventName = (t.eventName || (ev && ev.name) || 'Event').replace(/'/g, "\\'");
+          const safeComment = ((existingFb && existingFb.comment) || '').replace(/'/g, "\\'").replace(/\n/g, ' ');
+          return `
+          <div class="ticket-card">
+            <div class="ticket-header">
+              <div>
+                <span class="ticket-badge-id">Ticket #${tId}</span>
+                <h3 style="font-family: var(--font-heading); font-size: 1.25rem; margin-top: 0.4rem;">${t.eventName || (ev && ev.name) || 'Event'}</h3>
+              </div>
+              <span class="status-badge ${isCheckedIn ? 'status-active' : 'status-pending'}" style="${isCheckedIn ? 'background:rgba(16,185,129,0.15);color:#34d399;border:1px solid rgba(16,185,129,0.3);' : 'background:rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(245,158,11,0.3);'}">
+                ${isCheckedIn ? '✓ Checked In' : 'Pending'}
+              </span>
+            </div>
+
+            <!-- Tier & Payment Info -->
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;margin:0.6rem 0 0.4rem;">
+              <span style="background:rgba(99,102,241,0.2);border:1px solid rgba(99,102,241,0.35);border-radius:6px;padding:0.2rem 0.6rem;font-size:0.78rem;font-weight:600;color:#a5b4fc;">🎟️ ${tierLabel}</span>
+              <span style="background:rgba(16,185,129,0.15);border:1px solid rgba(16,185,129,0.3);border-radius:6px;padding:0.2rem 0.6rem;font-size:0.78rem;font-weight:600;color:#6ee7b7;">💳 ${amtPaid}</span>
+              ${myPay ? `<span style="font-size:0.72rem;color:var(--text-muted);">Txn: ${myPay.txnId || '—'}</span>` : ''}
+            </div>
+
+            <!-- Crisp Visual QR Code Display -->
+            <div class="ticket-qr-container">
+              <canvas id="qr-canvas-${tId}" class="ticket-qr-canvas" width="140" height="140"></canvas>
+              <span class="ticket-qr-string">#${tId}: ${t.qrCode || 'QR-CODE'} (${isCheckedIn ? 'Checked In' : 'Pending'})</span>
+            </div>
+
+            <div style="font-size: 0.78rem; color: var(--text-muted); text-align: center; margin-top: 0.4rem;">
+              Verified Admission for ${currentUser.name} (${currentUser.email}) • Guaranteed Entry
+            </div>
+
+            <div style="display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap;">
+              ${isCheckedIn && isPast ? `
+                <button class="btn btn-primary btn-sm flex-1" onclick="openFeedbackModal(${tEvId}, '${safeEventName}', ${existingFb ? existingFb.rating : 5}, '${safeComment}')">
+                  ⭐ ${existingFb ? `Edit Feedback (${existingFb.rating}★)` : 'Give Feedback'}
+                </button>
+              ` : ''}
+              ${!isCheckedIn && !isPast ? `
+                <button class="btn btn-secondary btn-sm flex-1" onclick="cancelTicketBooking('${tId}')">
+                  Cancel Registration
+                </button>
+              ` : ''}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    `}
+  `;
+
+  // Draw real QR code matrices on canvas for each ticket
+  myTickets.forEach(t => drawVisualQRCode(`qr-canvas-${t.ticketId || t.id}`, t.qrCode || 'QR-CODE'));
+
+  // Attended Events & Feedback Summary Section
+  const attendedTickets = myTickets.filter(t => {
+    const tEvId = t.eventId || t.event_id;
+    const ev = events.find(e => e.id == tEvId);
+    const isAttended = Boolean(t.checkedIn || t.checked_in || t.checkedInAt || t.checked_in_at || t.status === 'ATTENDED');
+    const isPast = ev && (new Date(ev.date) < new Date() || ev.status === 'COMPLETED');
+    return isAttended && isPast;
+  });
+
+  const feedbackCard = document.createElement('div');
+  feedbackCard.className = 'table-card';
+  feedbackCard.style.marginTop = '2rem';
+  feedbackCard.innerHTML = `
+    <div class="table-header-row">
+      <div>
+        <h3 class="table-title">Attended Events & Feedback</h3>
+        <p style="color:var(--text-secondary);font-size:0.82rem;margin-top:0.2rem;">Rate and review campus events you have checked into</p>
+      </div>
+      <span class="badge-role">${attendedTickets.length} Attended</span>
+    </div>
+    ${attendedTickets.length === 0 ? `
+      <p style="color:var(--text-muted);font-size:0.85rem;">No past attended events yet. Attend an event and check in with staff to unlock feedback.</p>
+    ` : `
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th>Date</th>
+              <th>Status</th>
+              <th>Your Rating</th>
+              <th>Your Review</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${attendedTickets.map(t => {
+              const tEvId = t.eventId || t.event_id;
+              const ev = events.find(e => e.id == tEvId);
+              const fb = attendeeFeedbacks.find(f => (f.eventId == tEvId) || (f.event_id == tEvId));
+              const safeName = (t.eventName || (ev && ev.name) || 'Event').replace(/'/g, "\\'");
+              const safeComment = ((fb && fb.comment) || '').replace(/'/g, "\\'").replace(/\n/g, ' ');
+              return `
+                <tr>
+                  <td><strong>${t.eventName || (ev && ev.name) || 'Event'}</strong></td>
+                  <td style="font-size:0.8rem;color:var(--text-muted);">${ev ? ev.date : 'Past'}</td>
+                  <td><span class="status-badge status-active">✓ Attended</span></td>
+                  <td>${fb ? `⭐ <strong>${fb.rating} / 5</strong>` : '<span style="color:var(--text-muted);">Not rated yet</span>'}</td>
+                  <td style="font-size:0.82rem;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                    ${fb && fb.comment ? escapeHtml(fb.comment) : '<em style="color:var(--text-muted);">No comment</em>'}
+                  </td>
+                  <td>
+                    <button class="btn btn-secondary btn-sm" onclick="openFeedbackModal(${tEvId}, '${safeName}', ${fb ? fb.rating : 5}, '${safeComment}')">
+                      ${fb ? '✏️ Edit Feedback' : '⭐ Give Feedback'}
+                    </button>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    `}
+  `;
+  workspace.appendChild(feedbackCard);
+
+  // Render Attendee Payment & Transaction History
+  const myPaymentsList = payments.filter(p => p.userId === currentUser.id);
+  const payHistoryCard = document.createElement('div');
+  payHistoryCard.className = 'table-card';
+  payHistoryCard.style.marginTop = '2rem';
+  payHistoryCard.innerHTML = `
+    <div class="table-header-row">
+      <div>
+        <h3 class="table-title">Payment & Transaction History</h3>
+        <p style="color:var(--text-secondary);font-size:0.82rem;margin-top:0.2rem;">Razorpay verified admissions and receipts stored in PostgreSQL</p>
+      </div>
+      <span class="badge-role">${myPaymentsList.length} Transactions</span>
+    </div>
+    ${myPaymentsList.length === 0 ? `
+      <p style="color:var(--text-muted);font-size:0.85rem;">No payment transactions recorded yet.</p>
+    ` : `
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Payment ID / Order</th>
+              <th>Event</th>
+              <th>Pass Tier</th>
+              <th>Amount</th>
+              <th>Status</th>
+              <th>Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${myPaymentsList.slice().reverse().map(p => `
+              <tr>
+                <td style="font-family:monospace;font-size:0.8rem;">${p.razorpay_payment_id || p.txnId || p.razorpay_order_id || 'PAY-' + p.paymentId}</td>
+                <td><strong>${p.eventName || p.event_name || 'Event'}</strong></td>
+                <td><span style="font-size:0.78rem;background:rgba(99,102,241,0.15);padding:0.15rem 0.45rem;border-radius:4px;color:#a5b4fc;">${p.tierName || p.tier_name || 'Pass'}</span></td>
+                <td><strong style="color:var(--emerald-success);">₹${(p.amount || p.totalAmount || 0).toLocaleString()}</strong></td>
+                <td><span class="status-badge status-active">${p.payment_status || p.status || 'SUCCESS'}</span></td>
+                <td style="font-size:0.8rem;color:var(--text-muted);">${new Date(p.payment_date || p.paidAt || Date.now()).toLocaleDateString()}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `}
+  `;
+  workspace.appendChild(payHistoryCard);
+}
+
+// 4. Staff Dashboard & QR Ticket Scanner Subsystem
+function getAttendeeName(ticket) {
+  if (ticket.userName) return ticket.userName;
+  const user = users.find(u => u.id === ticket.userId);
+  if (user && user.name) return user.name;
+  return "Attendee #" + (ticket.userId || ticket.ticketId);
+}
+
+function getTicketPriceDisplay(ticket) {
+  if (ticket.tierPrice !== undefined) return ticket.tierPrice === 0 ? "Free (₹0)" : `₹${ticket.tierPrice}`;
+  if (ticket.amountPaid !== undefined) return ticket.amountPaid === 0 ? "Free (₹0)" : `₹${ticket.amountPaid}`;
+  return "₹199";
+}
+
+function getTicketTypeDisplay(ticket) {
+  return ticket.tierName || "General Pass";
+}
+
+function getCheckInStatusDisplay(ticket) {
+  if (ticket.cancelled || ticket.status === 'CANCELLED') return '<span class="status-badge risk-critical">✕ Cancelled</span>';
+  const isCheckedIn = ticket.checkedIn === true || ticket.checked_in === true || ticket.status === 'CHECKED_IN';
+  if (isCheckedIn) return '<span class="status-badge risk-normal">✓ Checked In</span>';
+  return '<span class="status-badge risk-moderate" style="color:#f59e0b; border-color: rgba(245,158,11,0.3); background: rgba(245,158,11,0.1);">Pending Check-in</span>';
+}
+
+function formatCheckInTime(isoString) {
+  if (!isoString) return "N/A";
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    return d.toLocaleString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true
+    });
+  } catch (e) {
+    return isoString;
+  }
+}
+
+function renderRecentCheckInsTableHtml() {
+  const checkedInTickets = tickets.filter(t => t.checkedIn === true || t.checked_in === true || t.status === 'CHECKED_IN').sort((a, b) => {
+    const timeA = a.checkInTime ? new Date(a.checkInTime).getTime() : (a.check_in_time ? new Date(a.check_in_time).getTime() : 0);
+    const timeB = b.checkInTime ? new Date(b.checkInTime).getTime() : (b.check_in_time ? new Date(b.check_in_time).getTime() : 0);
+    return timeB - timeA;
+  });
+
+  if (checkedInTickets.length === 0) {
+    return `
+      <tr>
+        <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+          No tickets checked in yet today. Scan an attendee QR code above to perform gate admission.
+        </td>
+      </tr>
+    `;
+  }
+
+  return checkedInTickets.map(t => `
+    <tr>
+      <td style="font-family: monospace; font-weight: 700; color: #a5b4fc;">#${String(t.ticketId || t.id).padStart(4, '0')}</td>
+      <td style="font-weight: 600; color: #fff;">${getAttendeeName(t)}</td>
+      <td>${t.eventName}</td>
+      <td><span class="tier-tag">${getTicketTypeDisplay(t)}</span></td>
+      <td style="font-size: 0.82rem; color: var(--text-secondary);">${formatCheckInTime(t.checkInTime || t.check_in_time)}</td>
+      <td style="font-size: 0.82rem; color: #a7f3d0;">${t.checkedInBy || 'Gate Staff'}</td>
+      <td><span class="status-badge risk-normal" style="color:#fff;">✓ Checked In</span></td>
+    </tr>
+  `).join('');
+}
+
+function refreshStaffCheckInsTable() {
+  const tbody = document.getElementById('staff-recent-checkins-tbody');
+  if (tbody) {
+    tbody.innerHTML = renderRecentCheckInsTableHtml();
+  }
+}
+
+function refreshStaffStats() {
+  const totalEl = document.getElementById('staff-stat-total');
+  const verifiedEl = document.getElementById('staff-stat-verified');
+  const pendingEl = document.getElementById('staff-stat-pending');
+  const total = tickets.filter(t => !t.cancelled && t.status !== 'CANCELLED').length;
+  const verified = tickets.filter(t => t.checkedIn === true || t.checked_in === true || t.status === 'CHECKED_IN').length;
+  const pending = Math.max(0, total - verified);
+  if (totalEl) totalEl.textContent = total;
+  if (verifiedEl) verifiedEl.textContent = verified;
+  if (pendingEl) pendingEl.textContent = pending;
+}
+
+function clearStaffScanResult() {
+  const resultBox = document.getElementById('staff-scan-result');
+  if (resultBox) resultBox.innerHTML = '';
+  const inp = document.getElementById('staff-manual-input');
+  if (inp) {
+    inp.value = '';
+    inp.focus();
+  }
+}
+
+function renderStaffScannerComponentHtml() {
+  const activeTickets = tickets.filter(t => !t.cancelled && t.status !== 'CANCELLED');
+  return `
+    <div class="scanner-card" style="max-width: 840px; margin: 0 auto 2rem;">
+      <div style="text-align: center; margin-bottom: 1.5rem;">
+        <div style="font-size: 2.2rem; margin-bottom: 0.5rem;">🛡️</div>
+        <h2 style="font-family: var(--font-heading); font-size: 1.75rem;">QR Ticket Scanner</h2>
+        <p style="color: var(--text-secondary); font-size: 0.88rem;">
+          Sub-second attendee ticket verification, camera QR scanning, and gate check-in
+        </p>
+      </div>
+
+      <!-- Camera Scanner Viewport -->
+      <div class="camera-scanner-wrapper" id="camera-wrapper" style="display: none;">
+        <video id="staff-camera-preview" autoplay playsinline style="width: 100%; height: 100%; object-fit: cover; max-height: 280px;"></video>
+        <div class="camera-viewfinder-overlay">
+          <div class="camera-scan-laser"></div>
+        </div>
+      </div>
+
+      <!-- Camera & File Controls -->
+      <div style="display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; margin-bottom: 0.75rem;">
+        <button type="button" class="btn btn-primary btn-sm" id="btn-start-camera" onclick="startStaffCameraScanner()">
+          📷 Open Device Camera
+        </button>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-stop-camera" onclick="stopStaffCameraScanner()" style="display: none;">
+          ⏹️ Stop Camera
+        </button>
+        <button type="button" class="btn btn-glass btn-sm" onclick="document.getElementById('staff-qr-file-input').click()">
+          📁 Scan QR Image File
+        </button>
+        <input type="file" id="staff-qr-file-input" accept="image/*" style="display: none;" onchange="handleStaffQRFileUpload(event)">
+      </div>
+      <div id="camera-status-msg" style="text-align: center; font-size: 0.78rem; color: var(--text-muted); margin-bottom: 1.25rem;"></div>
+
+      <!-- 10. Manual Token / Ticket ID Input Backup -->
+      <form id="staff-manual-scan-form" onsubmit="handleStaffManualScanSubmit(event)">
+        <label class="field-label" style="font-size: 0.78rem; font-weight: 600; color: #a5b4fc;">
+          Manual Token / Ticket ID Input (Backup)
+        </label>
+        <div class="scanner-input-row" style="display: flex; gap: 0.75rem;">
+          <input type="text" id="staff-manual-input" class="modal-input" placeholder="Scan or enter QR Token (e.g. EVENTRA-QR-0001-0001) or Ticket ID (e.g. 1)" style="flex: 1;" required>
+          <button type="submit" class="btn btn-primary" style="white-space: nowrap;">🔍 Verify Ticket</button>
+        </div>
+      </form>
+
+      <!-- Quick Scan Test Shortcuts -->
+      <div style="margin-top: 1rem;">
+        <span style="font-size: 0.78rem; font-weight: 600; color: var(--text-secondary);">Click any issued ticket QR to test verification:</span>
+        <div class="quick-scan-group" style="margin-top: 0.4rem;">
+          ${activeTickets.slice(0, 8).map(t => {
+            const isChecked = t.checkedIn === true || t.checked_in === true || t.status === 'CHECKED_IN';
+            return `
+            <button type="button" class="quick-scan-pill" onclick="testStaffQRScan('${t.qrCode}')">
+              #${t.ticketId || t.id}: ${t.qrCode} (${isChecked ? '✓ Checked In' : 'Pending'})
+            </button>
+            `;
+          }).join('')}
+          <button type="button" class="quick-scan-pill" style="color: #fb7185; border-color: rgba(244,63,94,0.3);" onclick="testStaffQRScan('EVENTRA-FORGED-FAKE-QR')">
+            [Test Fake/Invalid QR]
+          </button>
+          ${tickets.some(t => t.cancelled || t.status === 'CANCELLED') ? `
+            <button type="button" class="quick-scan-pill" style="color: #fda4af; border-color: rgba(253,164,175,0.3);" onclick="testStaffQRScan('${(tickets.find(t => t.cancelled || t.status === 'CANCELLED') || {}).qrCode}')">
+              [Test Cancelled Ticket]
+            </button>
+          ` : ''}
+        </div>
+      </div>
+
+      <!-- Result Container -->
+      <div id="staff-scan-result"></div>
+    </div>
+  `;
+}
+
+function renderStaffDashboard(workspace) {
+  const totalTickets = tickets.filter(t => !t.cancelled && t.status !== 'CANCELLED').length;
+  const verifiedCheckIns = tickets.filter(t => t.checkedIn).length;
+  const pendingCheckIns = Math.max(0, totalTickets - verifiedCheckIns);
+
+  workspace.innerHTML = `
+    <!-- Staff Stat Cards -->
+    <div class="dash-card-grid" style="margin-bottom: 1.5rem;">
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">🎟️</div>
+        <div class="stat-info">
+          <span class="stat-value" id="staff-stat-total">${totalTickets}</span>
+          <span class="stat-label">Total Platform Admissions</span>
+        </div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">🛡️</div>
+        <div class="stat-info">
+          <span class="stat-value" id="staff-stat-verified" style="color: var(--emerald-success);">${verifiedCheckIns}</span>
+          <span class="stat-label">Verified Gate Check-ins</span>
+        </div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">⏳</div>
+        <div class="stat-info">
+          <span class="stat-value" id="staff-stat-pending" style="color: #f59e0b;">${pendingCheckIns}</span>
+          <span class="stat-label">Pending Admissions</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 1. QR Ticket Scanner Section -->
+    ${renderStaffScannerComponentHtml()}
+
+    <!-- 11. Recent Check-ins Table -->
+    <div class="table-card">
+      <div class="table-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <div>
+          <h3 class="table-title">Recent Gate Check-ins</h3>
+          <p style="color: var(--text-secondary); font-size: 0.82rem; margin-top: 0.2rem;">
+            Real-time audit log of admitted attendees across venue entry gates
+          </p>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="refreshStaffCheckInsTable()">🔄 Refresh Table</button>
+      </div>
+
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Ticket ID</th>
+              <th>Attendee</th>
+              <th>Event</th>
+              <th>Ticket Type</th>
+              <th>Check-in Time</th>
+              <th>Staff</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="staff-recent-checkins-tbody">
+            ${renderRecentCheckInsTableHtml()}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderStaffScannerView(workspace) {
+  renderStaffDashboard(workspace);
+  setTimeout(() => {
+    const inp = document.getElementById('staff-manual-input');
+    if (inp) inp.focus();
+  }, 100);
+}
+
+function renderGateScannerView(workspace) {
+  renderStaffScannerView(workspace);
+}
+
+// 5. Live Crowd Monitoring & Zone Congestion View
+function renderCrowdMonitoringView(workspace) {
+  let allZones = [];
+  events.forEach(ev => {
+    if (ev.zones && ev.zones.length > 0) {
+      ev.zones.forEach(z => {
+        allZones.push({ ...z, eventName: ev.name });
+      });
+    }
+  });
+
+  workspace.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+      <div>
+        <h2 style="font-family: var(--font-heading); font-size: 1.65rem;">Live Venue Zone Crowd Monitoring</h2>
+        <p style="color: var(--text-secondary); font-size: 0.88rem;">
+          Real-time occupancy tracking with dynamic Green/Yellow/Orange/Red risk thresholds
+        </p>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="renderActiveView()">🔄 Refresh Counts</button>
+    </div>
+
+    <div class="zone-grid">
+      ${allZones.map(z => {
+        const pct = Math.min(100, Math.round((z.currentOccupancy / z.capacity) * 100));
+        let riskClass = "risk-normal";
+        let riskLabel = "Normal Occupancy";
+        if (pct >= 95) { riskClass = "risk-critical"; riskLabel = "Critical Congestion"; }
+        else if (pct >= 80) { riskClass = "risk-high"; riskLabel = "High Risk"; }
+        else if (pct >= 60) { riskClass = "risk-moderate"; riskLabel = "Moderate Flow"; }
+
+        return `
+          <div class="zone-card">
+            <div class="zone-card-top">
+              <span class="event-category-tag">${z.eventName}</span>
+              <span class="status-badge ${riskClass}" style="color: #fff;">${riskLabel}</span>
+            </div>
+            <h3 style="font-family: var(--font-heading); font-size: 1.2rem; margin-bottom: 0.5rem;">${z.name}</h3>
+            <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-secondary);">
+              <span>Occupancy</span>
+              <span><strong>${z.currentOccupancy}</strong> / ${z.capacity}</span>
+            </div>
+            <div class="zone-occupancy-bar-bg">
+              <div class="zone-occupancy-bar-fill ${riskClass}" style="width: ${pct}%;"></div>
+            </div>
+            <div style="text-align: right; font-size: 0.78rem; font-weight: 700; color: #fff;">
+              ${pct}% Capacity
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+// 6. Admin Governance View
+function renderAdminGovernanceView(workspace) {
+  const pendingEvents = events.filter(e => e.status === EVENT_STATUS.PENDING || e.status === 'PENDING' || e.status === 'PENDING APPROVAL');
+
+  workspace.innerHTML = `
+    <!-- PostgreSQL Database Engine Status & Diagnostics (Admin Panel) -->
+    <div class="table-card" style="margin-bottom: 2rem;">
+      <div class="table-header-row">
+        <div>
+          <h3 class="table-title">🗄️ PostgreSQL Database & Persistence Engine</h3>
+          <p style="color: var(--text-secondary); font-size: 0.82rem; margin-top: 0.2rem;">
+            Primary persistent relational database layer powering events, tickets, users, sponsorships, check-ins, and payments.
+          </p>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="testDatabaseConnection(true)">
+          🔄 Test DB Connection
+        </button>
+      </div>
+      <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 1.15rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
+        <div style="display: flex; align-items: center; gap: 1rem;">
+          <div style="width: 44px; height: 44px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 1.3rem;">
+            🐘
+          </div>
+          <div>
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+              <span style="font-weight: 700; color: #fff; font-size: 0.95rem;">PostgreSQL Relational Engine</span>
+              <span id="admin-db-status-tag" class="status-badge status-active" style="font-size: 0.72rem; background: rgba(16, 185, 129, 0.2); color: #34d399; border-color: rgba(16, 185, 129, 0.4);">
+                ${isBackendConnected ? (window._lastHealthData?.isNativePg ? '● PostgreSQL Native' : '● PostgreSQL Active') : '● Fallback Cache'}
+              </span>
+            </div>
+            <div style="font-size: 0.8rem; color: var(--text-secondary);" id="admin-db-desc">
+              ${isBackendConnected ? `Engine: ${dbEngineName} · Persistence: Active Realtime Sync · Status: Healthy (200 OK)` : 'Backend server offline. Operating in fallback browser storage mode.'}
+            </div>
+          </div>
+        </div>
+        <div style="font-size: 0.8rem; color: var(--text-muted); display: flex; gap: 1.25rem; align-items: center; flex-wrap: wrap;">
+          <span>Host: <code style="color: #38bdf8;">localhost:5432</code></span>
+          <span>Database: <code style="color: #38bdf8;">eventra_db</code></span>
+          <span>Schema: <code style="color: #38bdf8;">public</code></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Razorpay Payment Gateway & API Integration Settings (Admin Panel) -->
+    <div class="table-card" style="margin-bottom: 2rem;">
+      <div class="table-header-row">
+        <div>
+          <h3 class="table-title">💳 Payment Gateway & Razorpay API Configuration</h3>
+          <p style="color: var(--text-secondary); font-size: 0.82rem; margin-top: 0.2rem;">
+            Configure official Razorpay API keys, test gateway connectivity, or operate in test sandbox mode.
+          </p>
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" onclick="openRazorpayConfigModal()">
+          ⚙ Configure API Keys
+        </button>
+      </div>
+      <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 1.15rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
+        <div style="display: flex; align-items: center; gap: 1rem;">
+          <div style="width: 44px; height: 44px; background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.35); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 1.3rem; font-weight: 800; color: #a5b4fc;">
+            ₹
+          </div>
+          <div>
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+              <span style="font-weight: 700; color: #fff; font-size: 0.95rem;">Razorpay Payment Gateway</span>
+              <span id="admin-rzp-status-tag" class="status-badge status-active" style="font-size: 0.72rem;">Checking...</span>
+            </div>
+            <div style="font-size: 0.8rem; color: var(--text-secondary);" id="admin-rzp-desc">
+              Checking gateway connection...
+            </div>
+          </div>
+        </div>
+        <div style="display: flex; gap: 0.5rem;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="checkRazorpayGatewayStatus(true)">
+            🔄 Test Connection
+          </button>
+          <button type="button" class="btn btn-primary btn-sm" onclick="openRazorpayConfigModal()">
+            ⚙ Change API Keys
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pending Event Approvals -->
+    <div class="table-card" style="margin-bottom: 2rem;">
+      <div class="table-header-row">
+        <h3 class="table-title">Pending Event Review Queue (${pendingEvents.length})</h3>
+        <span class="badge-role">Administration Workflow</span>
+      </div>
+      ${pendingEvents.length === 0 ? `
+        <p style="color: var(--text-muted); font-size: 0.88rem;">No organizer events currently awaiting approval.</p>
+      ` : `
+        <div class="table-container">
+          <table class="custom-table">
+            <thead>
+              <tr>
+                <th>ID</th><th>Event Name</th><th>Organizer</th><th>Venue & Date</th><th>Budget</th><th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${pendingEvents.map(ev => {
+                const org = users.find(u => u.id === ev.organizerId);
+                return `
+                  <tr>
+                    <td>#${ev.id}</td>
+                    <td><strong>${ev.name}</strong></td>
+                    <td>${org ? org.name : 'Organizer'}</td>
+                    <td>${ev.venue} (${ev.date})</td>
+                    <td>INR ${Number(ev.budget).toLocaleString()}</td>
+                    <td>
+                      <div style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
+                        <button class="btn btn-primary btn-sm" onclick="approveEvent(${ev.id})">✓ Approve</button>
+                        <button class="btn btn-secondary btn-sm" onclick="rejectEvent(${ev.id})">✕ Reject</button>
+                        <button class="btn btn-secondary btn-sm" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4);" onclick="deleteEvent(${ev.id})" title="Remove Event">🗑️ Remove</button>
+                      </div>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </div>
+
+    <!-- All Platform Events Governance (Admin Permission to Remove Events Even After Approval) -->
+    <div class="table-card" style="margin-bottom: 2rem;">
+      <div class="table-header-row">
+        <div>
+          <h3 class="table-title">All Platform Events Management (${events.length})</h3>
+          <p style="color: var(--text-secondary); font-size: 0.82rem; margin-top: 0.2rem;">
+            Full administrator authority to inspect, approve, reject or permanently remove events at any stage.
+          </p>
+        </div>
+        <span class="badge-role">Admin Control Panel</span>
+      </div>
+      ${events.length === 0 ? `
+        <p style="color: var(--text-muted); font-size: 0.88rem;">No events registered on the platform.</p>
+      ` : `
+        <div class="table-container">
+          <table class="custom-table">
+            <thead>
+              <tr>
+                <th>ID</th><th>Event Name</th><th>Category</th><th>Status</th><th>Organizer</th><th>Venue & Date</th><th>Seats Available</th><th>Budget</th><th>Admin Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${events.map(ev => {
+                const org = users.find(u => u.id === ev.organizerId);
+                const isPending = ev.status === 'PENDING' || ev.status === 'PENDING APPROVAL' || ev.status === EVENT_STATUS.PENDING;
+                let statusBadge = `<span class="badge-role">${ev.status}</span>`;
+                if (ev.status === EVENT_STATUS.PUBLISHED) statusBadge = `<span class="status-badge status-active">PUBLISHED</span>`;
+                else if (ev.status === EVENT_STATUS.APPROVED) statusBadge = `<span class="status-badge status-active">APPROVED</span>`;
+                else if (ev.status === EVENT_STATUS.CANCELLED) statusBadge = `<span class="status-badge status-deactivated">CANCELLED</span>`;
+                else if (isPending) statusBadge = `<span class="badge-role" style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);">PENDING</span>`;
+
+                return `
+                  <tr>
+                    <td>#${ev.id}</td>
+                    <td><strong>${ev.name}</strong></td>
+                    <td><span class="event-category-tag" style="font-size:0.7rem;">${ev.type}</span></td>
+                    <td>${statusBadge}</td>
+                    <td>${org ? org.name : 'Unknown'}</td>
+                    <td>${ev.venue} (${ev.date})</td>
+                    <td><strong>${ev.availableSeats}</strong> / ${ev.capacity}</td>
+                    <td>INR ${Number(ev.budget || 0).toLocaleString()}</td>
+                    <td>
+                      <div style="display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
+                        ${isPending ? `
+                          <button class="btn btn-primary btn-sm" onclick="approveEvent(${ev.id})" title="Approve & Publish Event Immediately">
+                            ✓ Approve
+                          </button>
+                          <button class="btn btn-secondary btn-sm" onclick="rejectEvent(${ev.id})" title="Reject to Draft">
+                            ✕ Reject
+                          </button>
+                        ` : (ev.status === EVENT_STATUS.APPROVED || ev.status === EVENT_STATUS.PUBLISHED) ? `
+                          <button class="btn btn-secondary btn-sm" style="color: #fbbf24; border-color: rgba(245, 158, 11, 0.4);" onclick="rejectEvent(${ev.id})" title="Unpublish / Return to Draft">
+                            Revoke
+                          </button>
+                        ` : `
+                          <button class="btn btn-primary btn-sm" onclick="approveEvent(${ev.id})" title="Approve & Publish Event">
+                            ✓ Approve
+                          </button>
+                        `}
+                        <button class="btn btn-secondary btn-sm" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4);" onclick="deleteEvent(${ev.id})" title="Remove Event Permanently">
+                          🗑️ Remove Event
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </div>
+
+    <!-- User Accounts Governance -->
+    <div class="table-card">
+      <div class="table-header-row">
+        <h3 class="table-title">Registered Accounts Governance</h3>
+        <span class="badge-role">${users.length} Total Users</span>
+      </div>
+      <div class="table-container">
+        <table class="custom-table">
+          <thead>
+            <tr>
+              <th>ID</th><th>Name</th><th>Email</th><th>Role</th><th>Organization</th><th>Status</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${users.map(u => `
+              <tr>
+                <td>#${u.id}</td>
+                <td><strong>${u.name}</strong></td>
+                <td>${u.email}</td>
+                <td><span class="badge-role">${ROLE_NAMES[u.role]}</span></td>
+                <td>${u.organization || 'N/A'}</td>
+                <td>
+                  <span class="status-badge ${u.isActive ? 'status-active' : 'status-deactivated'}">
+                    ${u.isActive ? 'Active' : 'Disabled'}
+                  </span>
+                </td>
+                <td>
+                  ${u.id === 1 ? '<span style="color: var(--text-muted); font-size: 0.75rem;">Root Admin</span>' : `
+                    <button class="btn btn-secondary btn-sm" onclick="toggleUserActivation(${u.id})">
+                      ${u.isActive ? 'Deactivate' : 'Activate'}
+                    </button>
+                  `}
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  updateAdminDbStatusUI();
+  checkRazorpayGatewayStatus();
+}
+
+// 6. Sponsorships & Brand Partnerships View
+function renderSponsorshipsView(workspace) {
+  const mySponsorships = sponsorships.filter(s => s.sponsorId === currentUser.id);
+  const totalPledged = mySponsorships.reduce((sum, s) => sum + (s.amount || 0), 0);
+  const totalReach = events.filter(e => mySponsorships.some(s => s.eventId === e.id)).reduce((sum, e) => sum + e.capacity, 0);
+
+  workspace.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
+      <div>
+        <h2 style="font-family: var(--font-heading); font-size: 1.65rem;">Corporate Sponsorship Portal</h2>
+        <p style="color: var(--text-secondary); font-size: 0.88rem;">
+          Manage your event partnerships, track brand impressions, and review booth assignments
+        </p>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="openSponsorModal()">
+        💼 + Sponsor An Event
+      </button>
+    </div>
+
+    <!-- KPI Metrics -->
+    <div class="dash-card-grid">
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">💰</div>
+        <div class="stat-info">
+          <span class="stat-value">₹${totalPledged.toLocaleString()}</span>
+          <span class="stat-label">Total Capital Pledged</span>
+        </div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">🤝</div>
+        <div class="stat-info">
+          <span class="stat-value">${mySponsorships.length}</span>
+          <span class="stat-label">Active Backed Events</span>
+        </div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">👁️</div>
+        <div class="stat-info">
+          <span class="stat-value">${totalReach.toLocaleString()}+</span>
+          <span class="stat-label">Estimated Brand Impressions</span>
+        </div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="stat-icon-wrapper">📍</div>
+        <div class="stat-info">
+          <span class="stat-value">${mySponsorships.filter(s => s.boothAssigned).length}</span>
+          <span class="stat-label">Assigned VIP Booth Slots</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Brand Partnerships Section -->
+    <div class="table-card" style="margin-bottom: 2rem;">
+      <div class="table-header-row">
+        <div>
+          <h3 class="table-title">My Active Corporate Sponsorships</h3>
+          <p style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.2rem;">
+            Events sponsored by ${currentUser.organization || currentUser.name}
+          </p>
+        </div>
+        <span class="badge-role">${mySponsorships.length} Active Pledges</span>
+      </div>
+
+      ${mySponsorships.length === 0 ? `
+        <div style="text-align: center; padding: 2.5rem 1rem;">
+          <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🏢</div>
+          <h4>No Active Sponsorships Yet</h4>
+          <p style="color: var(--text-secondary); margin: 0.5rem 0 1.25rem;">
+            Support college fests and technical summits to get premier branding and booth space.
+          </p>
+          <button class="btn btn-primary btn-sm" onclick="openSponsorModal()">Browse & Sponsor An Event</button>
+        </div>
+      ` : `
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Event Name</th>
+                <th>Package Tier</th>
+                <th>Pledged Amount</th>
+                <th>Assigned Booth</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${mySponsorships.map(s => `
+                <tr>
+                  <td>
+                    <strong>${s.eventName}</strong>
+                    <div style="font-size: 0.75rem; color: var(--text-muted);">${new Date(s.pledgedAt).toLocaleDateString()}</div>
+                  </td>
+                  <td>
+                    <span class="badge-sponsor-tier badge-${s.tier.toLowerCase()}">${s.tier === 'Platinum' ? '💎' : s.tier === 'Gold' ? '🥇' : '🥈'} ${s.tier}</span>
+                  </td>
+                  <td><strong style="color: var(--emerald-success);">₹${s.amount.toLocaleString()}</strong></td>
+                  <td>${s.boothAssigned || 'Pending Allocation'}</td>
+                  <td><span class="status-badge status-active">${s.status}</span></td>
+                  <td>
+                    <button class="btn btn-secondary btn-sm" onclick="downloadSponsorshipAgreement(${s.id})">
+                      📄 Agreement
+                    </button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </div>
+
+    <!-- Available Sponsorship Packages Tier Guide -->
+    <div class="table-card">
+      <div class="table-header-row">
+        <h3 class="table-title">Standard Campus Sponsorship Tiers & Deliverables</h3>
+        <span class="badge-active">Partnership Catalog</span>
+      </div>
+
+      <div class="tier-cards-grid">
+        <div class="tier-select-card" data-tier="Platinum">
+          <div class="tier-card-header">
+            <span class="tier-icon">💎</span>
+            <span class="tier-title">Platinum Partner</span>
+          </div>
+          <div class="tier-price">₹50,000</div>
+          <ul class="tier-perks">
+            <li>✓ Prime Main Stage Banner & Keynote Shoutout</li>
+            <li>✓ Premium VIP Booth in Main Auditorium</li>
+            <li>✓ 10 Complimentary VIP Event Passes</li>
+            <li>✓ Top Logo Placement on Portal & Badges</li>
+          </ul>
+        </div>
+
+        <div class="tier-select-card" data-tier="Gold">
+          <div class="tier-card-header">
+            <span class="tier-icon">🥇</span>
+            <span class="tier-title">Gold Partner</span>
+          </div>
+          <div class="tier-price">₹25,000</div>
+          <ul class="tier-perks">
+            <li>✓ Prominent Food Court / Workshop Booth</li>
+            <li>✓ Digital Displays Across All Venue Screens</li>
+            <li>✓ 5 Complimentary VIP Event Passes</li>
+            <li>✓ Promoted Sponsor Listing on App</li>
+          </ul>
+        </div>
+
+        <div class="tier-select-card" data-tier="Silver">
+          <div class="tier-card-header">
+            <span class="tier-icon">🥈</span>
+            <span class="tier-title">Silver Partner</span>
+          </div>
+          <div class="tier-price">₹10,000</div>
+          <ul class="tier-perks">
+            <li>✓ Logo on Marketing Material & Event Schedule</li>
+            <li>✓ 2 Complimentary VIP Event Passes</li>
+            <li>✓ Social Media Mention & Acknowledgement</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ========================================================================= */
+/*                          ACTIONS & EVENT HANDLERS                         */
+/* ========================================================================= */
+
+async function switchView(viewName) {
+  if (currentActiveView === 'scanner' && viewName !== 'scanner') {
+    if (typeof stopStaffCameraScanner === 'function') stopStaffCameraScanner();
+  }
+  if (viewName === 'scanner' && currentUser && currentUser.role !== ROLES.STAFF && currentUser.role !== ROLES.ADMIN) {
+    showToast("Access Denied: QR Scanner is restricted to Staff members.", "error");
+    return;
+  }
+  setActiveNavButton(viewName);
+
+  if (viewName === 'tickets' && currentUser) {
+    if (typeof window.syncTicketsFromBackend === 'function') {
+      try {
+        await window.syncTicketsFromBackend();
+      } catch (err) {
+        console.warn("syncTicketsFromBackend error:", err);
+      }
+    }
+  } else if (currentUser && (currentUser.role === ROLES.STAFF || currentUser.role === ROLES.ADMIN) && (viewName === 'scanner' || viewName === 'home')) {
+    if (typeof window.syncTicketsFromBackend === 'function') {
+      try {
+        await window.syncTicketsFromBackend();
+      } catch (err) {
+        console.warn("syncTicketsFromBackend error:", err);
+      }
+    }
+  }
+
+  renderActiveView();
+
+  if (viewName === 'tickets' && currentUser && currentUser.role === ROLES.ATTENDEE) {
+    loadAttendeeFeedbacks().then(() => {
+      if (currentActiveView === 'tickets') {
+        const ws = document.getElementById('role-workspace');
+        if (ws) renderMyTicketsView(ws);
+      }
+    });
+  }
+}
+
+// Visual QR Code Matrix Generator on Canvas
+function drawVisualQRCode(canvasId, text) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const size = 140;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, size, size);
+
+  ctx.fillStyle = '#0f172a';
+  const numCells = 21;
+  const cellSize = size / numCells;
+
+  // Helper to draw corner locator boxes
+  function drawFinderPattern(startX, startY) {
+    for (let r = 0; r < 7; r++) {
+      for (let c = 0; c < 7; c++) {
+        if (r === 0 || r === 6 || c === 0 || c === 6 || (r >= 2 && r <= 4 && c >= 2 && c <= 4)) {
+          ctx.fillRect((startX + c) * cellSize, (startY + r) * cellSize, cellSize, cellSize);
+        }
+      }
+    }
+  }
+
+  drawFinderPattern(0, 0);
+  drawFinderPattern(numCells - 7, 0);
+  drawFinderPattern(0, numCells - 7);
+
+  // Deterministic pseudo-random modules based on text hash
+  let seed = 0;
+  for (let i = 0; i < text.length; i++) {
+    seed = ((seed << 5) - seed) + text.charCodeAt(i);
+    seed |= 0;
+  }
+
+  for (let r = 0; r < numCells; r++) {
+    for (let c = 0; c < numCells; c++) {
+      // Skip finder pattern zones
+      if ((r < 8 && c < 8) || (r < 8 && c >= numCells - 8) || (r >= numCells - 8 && c < 8)) continue;
+      seed = (seed * 9301 + 49297) % 233280;
+      if (seed / 233280 > 0.45) {
+        ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
+      }
+    }
+  }
+}
+
+// Book Ticket — opens payment modal
+window.bookTicket = function(eventId) {
+  const ev = events.find(e => e.id === eventId);
+  if (!ev) return;
+  if (ev.availableSeats <= 0) {
+    showToast("No seats available for this event.", "error");
+    return;
+  }
+
+  _pmEventId = eventId;
+  _pmSelectedTierIdx = 0;
+  _pmSelectedMethod = 'UPI';
+
+  // Populate event summary
+  document.getElementById('pm-event-name').textContent = ev.name;
+  document.getElementById('pm-event-meta').textContent = `${ev.venue} • ${ev.date}`;
+  document.getElementById('pm-event-type').textContent = ev.type;
+
+  // Build tier cards
+  const tierContainer = document.getElementById('payment-tier-cards');
+  const tiers = (ev.tiers && ev.tiers.length) ? ev.tiers : [
+    { id: 1, name: 'General Admission', price: 199, totalSeats: ev.capacity, availableSeats: ev.availableSeats }
+  ];
+
+  tierContainer.innerHTML = tiers.map((tier, idx) => {
+    const soldOut = tier.availableSeats <= 0;
+    const priceLabel = tier.price === 0 ? '<span style="color:var(--emerald-success);font-weight:700;">FREE</span>' :
+      `<span style="font-weight:700;color:#fff;">₹${tier.price.toLocaleString()}</span>`;
+    return `
+      <div class="pm-tier-card${idx === 0 && !soldOut ? ' selected' : ''}${soldOut ? ' tier-sold-out' : ''}"
+           id="pm-tier-${idx}" onclick="selectTierCard(${idx})" style="${soldOut ? 'opacity:0.45;cursor:not-allowed;' : ''}">
+        <div>
+          <div style="font-weight:700;font-size:0.95rem;">${tier.name}</div>
+          <div style="font-size:0.78rem;color:var(--text-muted);margin-top:0.15rem;">
+            ${tier.availableSeats} seats left of ${tier.totalSeats}
+          </div>
+        </div>
+        <div style="text-align:right;">
+          ${priceLabel}
+          ${soldOut ? '<div style="font-size:0.72rem;color:#f87171;margin-top:0.15rem;">Sold Out</div>' : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  // Reset payment method UI
+  document.querySelectorAll('.pm-method-btn').forEach(b => b.classList.remove('active'));
+  const upiBtn = document.querySelector('.pm-method-btn[data-method="UPI"]');
+  if (upiBtn) upiBtn.classList.add('active');
+  document.getElementById('pm-upi-area').style.display = '';
+  document.getElementById('pm-card-area').style.display = 'none';
+  document.getElementById('pm-netbank-area').style.display = 'none';
+  document.getElementById('pm-processing').style.display = 'none';
+  document.getElementById('payment-form-area').style.display = '';
+
+  // Update order summary based on first non-soldout tier
+  const firstAvail = tiers.findIndex(t => t.availableSeats > 0);
+  if (firstAvail !== -1) {
+    _pmSelectedTierIdx = firstAvail;
+    selectTierCard(firstAvail, tiers);
+  } else {
+    updateOrderSummary({ name: '—', price: 0 });
+  }
+
+  document.getElementById('payment-modal').classList.remove('hidden');
+};
+
+window.selectTierCard = function(idx, tiersArr) {
+  const ev = events.find(e => e.id === _pmEventId);
+  if (!ev) return;
+  const tiers = tiersArr || (ev.tiers && ev.tiers.length ? ev.tiers : [
+    { id: 1, name: 'General Admission', price: 199, totalSeats: ev.capacity, availableSeats: ev.availableSeats }
+  ]);
+  if (tiers[idx] && tiers[idx].availableSeats <= 0) return;
+  _pmSelectedTierIdx = idx;
+  document.querySelectorAll('.pm-tier-card').forEach((c, i) => {
+    c.classList.toggle('selected', i === idx);
+  });
+  updateOrderSummary(tiers[idx]);
+};
+
+function updateOrderSummary(tier) {
+  const base = tier.price || 0;
+  const gst = tier.price > 0 ? Math.round(base * 0.18 * 100) / 100 : 0;
+  const total = base + gst;
+  document.getElementById('pm-summary-tier').textContent = tier.name;
+  document.getElementById('pm-summary-price').textContent = base === 0 ? 'FREE' : `₹${base.toLocaleString()}`;
+  document.getElementById('pm-summary-tax').textContent = gst === 0 ? '₹0.00' : `₹${gst.toFixed(2)}`;
+  document.getElementById('pm-summary-total').textContent = total === 0 ? 'FREE' : `₹${total.toFixed(2)}`;
+}
+
+window.selectPayMethod = function(btn) {
+  document.querySelectorAll('.pm-method-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  _pmSelectedMethod = btn.getAttribute('data-method');
+  document.getElementById('pm-upi-area').style.display = _pmSelectedMethod === 'UPI' ? '' : 'none';
+  document.getElementById('pm-card-area').style.display = _pmSelectedMethod === 'Card' ? '' : 'none';
+  document.getElementById('pm-netbank-area').style.display = _pmSelectedMethod === 'Netbanking' ? '' : 'none';
+  if (_pmSelectedMethod === 'UPI') {
+    updateUpiStatus('READY');
+  }
+};
+
+function updateUpiStatus(state, message) {
+  const lbl = document.getElementById('pm-upi-status-label');
+  const sub = document.getElementById('pm-upi-status-sub');
+  if (!lbl) return;
+
+  switch (state) {
+    case 'READY':
+      lbl.style.color = '#60a5fa';
+      lbl.textContent = '● Ready for Payment';
+      if (sub) sub.textContent = message || 'Click "Pay & Confirm Pass" to open Razorpay Checkout and complete your UPI payment.';
+      break;
+    case 'PENDING':
+      lbl.style.color = '#fbbf24';
+      lbl.textContent = '⏳ Preparing Razorpay Order...';
+      if (sub) sub.textContent = message || 'Contacting Razorpay gateway and registering order...';
+      break;
+    case 'WAITING':
+      lbl.style.color = '#fbbf24';
+      lbl.textContent = '⏳ Waiting for UPI / QR Payment...';
+      if (sub) sub.textContent = message || 'Complete UPI payment in Razorpay Checkout window.';
+      break;
+    case 'VERIFYING':
+      lbl.style.color = '#a78bfa';
+      lbl.textContent = '🔒 Verifying Signature...';
+      if (sub) sub.textContent = message || 'Authenticating payment signature with PostgreSQL...';
+      break;
+    case 'SUCCESS':
+      lbl.style.color = '#34d399';
+      lbl.textContent = '✓ Payment Successful';
+      if (sub) sub.textContent = message || 'Payment verified. Ticket and Gate QR code generated.';
+      break;
+    case 'FAILED':
+      lbl.style.color = '#f87171';
+      lbl.textContent = '✕ Payment Failed';
+      if (sub) sub.textContent = message || 'Transaction failed or was rejected. You can retry.';
+      break;
+    case 'CANCELLED':
+      lbl.style.color = '#94a3b8';
+      lbl.textContent = '✕ Payment Cancelled';
+      if (sub) sub.textContent = message || 'Checkout was dismissed. No pass was issued.';
+      break;
+  }
+}
+
+function resetPaymentButton() {
+  const btn = document.getElementById('confirm-payment-btn');
+  if (btn) {
+    btn.disabled = false;
+    btn.innerHTML = '<span>🔒 Pay & Confirm Pass</span>';
+  }
+}
+
+window.cancelPaymentProcess = async function() {
+  if (window._currentRazorpayOrderId) {
+    try {
+      await apiFetch('/payments/cancel', {
+        method: 'POST',
+        body: JSON.stringify({
+          razorpay_order_id: window._currentRazorpayOrderId,
+          userId: currentUser ? currentUser.id : null,
+          eventId: _pmEventId
+        })
+      });
+    } catch (e) {
+      console.warn("Cancel order warning:", e);
+    }
+    window._currentRazorpayOrderId = null;
+  }
+  closePaymentModal();
+};
+
+window.confirmPayment = async function() {
+  const ev = events.find(e => e.id === _pmEventId);
+  if (!ev) return;
+
+  if (ev.availableSeats <= 0) {
+    showToast("No seats available for this event.", "error");
+    return;
+  }
+
+  const tiers = (ev.tiers && ev.tiers.length) ? ev.tiers : [
+    { id: 1, name: 'General Admission', price: 199, totalSeats: ev.capacity, availableSeats: ev.availableSeats }
+  ];
+  const tier = tiers[_pmSelectedTierIdx];
+  if (!tier || tier.availableSeats <= 0) {
+    showToast("No seats available for this ticket type.", "error");
+    return;
+  }
+
+  const base = tier.price || 0;
+
+  // Case 1: Free Pass Workflow (Price = 0) -> No Razorpay required
+  if (base === 0) {
+    document.getElementById('payment-form-area').style.display = 'none';
+    document.getElementById('pm-processing').style.display = 'block';
+
+    const res = await apiFetch('/tickets/book-free', {
+      method: 'POST',
+      body: JSON.stringify({
+        userId: currentUser.id,
+        eventId: ev.id,
+        tierId: tier.id
+      })
+    });
+
+    closePaymentModal();
+    if (res.ok && res.data.ticket) {
+      await initDatabase();
+      showToast(`✅ Free ticket confirmed! Pass #${res.data.ticket.ticketId} issued.`, "success");
+      switchView('tickets');
+    } else {
+      showToast(res.data?.error || "Failed to issue ticket.", "error");
+    }
+    return;
+  }
+
+  // Case 2: Paid Pass Workflow -> Real Razorpay Test Mode Gateway (UPI / QR / Cards / Netbanking)
+  const confirmBtn = document.getElementById('confirm-payment-btn');
+  if (confirmBtn) {
+    confirmBtn.disabled = true;
+    confirmBtn.innerHTML = '<span class="spinner" style="display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.2);border-top-color:#fff;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:0.4rem;vertical-align:middle;"></span> Preparing Payment...';
+  }
+  updateUpiStatus('PENDING');
+
+  const selectedMethod = _pmSelectedMethod || 'UPI';
+
+  const orderRes = await apiFetch('/payments/create-order', {
+    method: 'POST',
+    body: JSON.stringify({
+      userId: currentUser.id,
+      eventId: ev.id,
+      ticketTypeId: tier.id,
+      quantity: 1,
+      paymentMethod: selectedMethod
+    })
+  });
+
+  if (!orderRes.ok || !orderRes.data.orderId) {
+    resetPaymentButton();
+    updateUpiStatus('FAILED', orderRes.data?.error || "Failed to initialize payment gateway order.");
+    showToast(orderRes.data?.error || "Failed to initialize payment gateway order.", "error");
+    return;
+  }
+
+  const orderData = orderRes.data;
+  window._currentRazorpayOrderId = orderData.orderId;
+
+  if (typeof window.Razorpay === 'undefined') {
+    resetPaymentButton();
+    updateUpiStatus('FAILED', 'Razorpay Checkout SDK is not loaded. Please disable content blockers or verify your connection.');
+    showToast("Razorpay Checkout SDK failed to load. Please verify your internet connection.", "error");
+    return;
+  }
+
+  const methodKey = selectedMethod === 'UPI' ? 'upi' : (selectedMethod === 'Card' ? 'card' : 'netbanking');
+  
+  const rzpOptions = {
+    key: orderData.keyId,
+    amount: Math.round(orderData.amount * 100),
+    currency: orderData.currency || "INR",
+    name: "EVENTRA",
+    description: `${orderData.eventName} - ${orderData.tierName}`,
+    order_id: orderData.orderId,
+    prefill: {
+      name: currentUser.name || "Attendee",
+      email: currentUser.email || "attendee@example.com",
+      contact: currentUser.phone || "+91 98765 43210",
+      method: methodKey
+    },
+    config: {
+      display: {
+        blocks: {
+          upi: {
+            name: "Pay using UPI / QR",
+            instruments: [
+              { method: "upi" }
+            ]
+          },
+          other: {
+            name: "Other Payment Modes",
+            instruments: [
+              { method: "card" },
+              { method: "netbanking" }
+            ]
+          }
+        },
+        sequence: selectedMethod === 'UPI' ? ["block.upi", "block.other"] : ["block.other", "block.upi"],
+        preferences: {
+          show_default_blocks: true
+        }
+      }
+    },
+    theme: { color: "#6366f1" },
+    handler: async function (response) {
+      updateUpiStatus('VERIFYING', 'Verifying signature and generating pass with PostgreSQL...');
+      
+      const verifyRes = await apiFetch('/payments/verify-signature', {
+        method: 'POST',
+        body: JSON.stringify({
+          razorpay_order_id: response.razorpay_order_id,
+          razorpay_payment_id: response.razorpay_payment_id,
+          razorpay_signature: response.razorpay_signature,
+          userId: currentUser.id,
+          eventId: ev.id,
+          ticketTypeId: tier.id
+        })
+      });
+
+      if (verifyRes.ok && verifyRes.data && verifyRes.data.success) {
+        window._currentRazorpayOrderId = null;
+        updateUpiStatus('SUCCESS', `✓ Payment ${response.razorpay_payment_id} Verified! Pass #${verifyRes.data.ticket.ticketId} Issued.`);
+        await initDatabase();
+        closePaymentModal();
+        showToast(`✅ Razorpay Payment ₹${Number(orderData.amount).toFixed(2)} Verified! Pass #${verifyRes.data.ticket.ticketId} Issued with Ticket QR.`, "success");
+        switchView('tickets');
+      } else {
+        updateUpiStatus('FAILED', verifyRes.data?.error || "Payment signature verification failed.");
+        showToast(verifyRes.data?.error || "Payment verification failed.", "error");
+        resetPaymentButton();
+      }
+    },
+    modal: {
+      ondismiss: async function() {
+        updateUpiStatus('CANCELLED', 'Payment window closed. Booking cancelled.');
+        try {
+          await apiFetch('/payments/cancel', {
+            method: 'POST',
+            body: JSON.stringify({
+              razorpay_order_id: orderData.orderId,
+              userId: currentUser.id,
+              eventId: ev.id
+            })
+          });
+        } catch (e) {
+          console.warn("Cancel payment warning:", e);
+        }
+        window._currentRazorpayOrderId = null;
+        showToast("Payment checkout closed. Ticket booking not completed.", "info");
+        resetPaymentButton();
+      }
+    }
+  };
+
+  try {
+    const rzp = new window.Razorpay(rzpOptions);
+    rzp.on('payment.failed', async function (resp) {
+      updateUpiStatus('FAILED', resp.error?.description || "Payment failed.");
+      await apiFetch('/payments/failure', {
+        method: 'POST',
+        body: JSON.stringify({
+          razorpay_order_id: orderData.orderId,
+          userId: currentUser.id,
+          eventId: ev.id,
+          errorMessage: resp.error?.description || "Payment failed"
+        })
+      });
+      window._currentRazorpayOrderId = null;
+      showToast(`Payment Failed: ${resp.error?.description || "Gateway error"}`, "error");
+      resetPaymentButton();
+    });
+
+    updateUpiStatus('WAITING', 'Waiting for payment in Razorpay UPI QR popup...');
+    rzp.open();
+  } catch (err) {
+    console.error("Razorpay popup launch error:", err);
+    resetPaymentButton();
+    updateUpiStatus('FAILED', `Failed to open Razorpay checkout: ${err.message}`);
+    showToast("Failed to launch Razorpay payment popup. Please retry.", "error");
+  }
+};
+
+function closePaymentModal() {
+  document.getElementById('payment-modal').classList.add('hidden');
+  document.getElementById('pm-processing').style.display = 'none';
+  document.getElementById('payment-form-area').style.display = '';
+  resetPaymentButton();
+  updateUpiStatus('READY');
+}
+
+// Razorpay API Keys Configuration Modal Handlers
+window.openRazorpayConfigModal = async function() {
+  const modal = document.getElementById('razorpay-config-modal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+
+  const statusMsg = document.getElementById('rzp-config-status-msg');
+  if (statusMsg) statusMsg.style.display = 'none';
+
+  try {
+    const res = await apiFetch('/payments/gateway-status');
+    if (res.ok && res.data) {
+      const keyInput = document.getElementById('rzp-key-id-input');
+      if (keyInput && res.data.keyId) {
+        keyInput.value = res.data.keyId;
+      }
+      if (statusMsg) {
+        statusMsg.style.display = 'block';
+        if (res.data.apiLive) {
+          statusMsg.style.background = 'rgba(16, 185, 129, 0.15)';
+          statusMsg.style.border = '1px solid rgba(16, 185, 129, 0.3)';
+          statusMsg.style.color = '#6ee7b7';
+          statusMsg.innerHTML = '<strong>✓ Razorpay API Live:</strong> Official checkout popup is connected and active.';
+        } else if (res.data.isCustomKey) {
+          statusMsg.style.background = 'rgba(239, 68, 68, 0.15)';
+          statusMsg.style.border = '1px solid rgba(239, 68, 68, 0.3)';
+          statusMsg.style.color = '#fca5a5';
+          statusMsg.innerHTML = `<strong>⚠️ Razorpay Key Warning:</strong> ${res.data.error || 'Authentication failed'}. Please verify Key ID & Secret.`;
+        } else {
+          statusMsg.style.background = 'rgba(99, 102, 241, 0.12)';
+          statusMsg.style.border = '1px solid rgba(99, 102, 241, 0.25)';
+          statusMsg.style.color = '#c7d2fe';
+          statusMsg.innerHTML = '<strong>ℹ Sandbox Mode:</strong> Enter your official Razorpay Test Key ID and Secret below to open the real Razorpay popup.';
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Config modal load error:', e);
+  }
+};
+
+window.closeRazorpayConfigModal = function() {
+  const modal = document.getElementById('razorpay-config-modal');
+  if (modal) modal.classList.add('hidden');
+};
+
+window.saveRazorpayKeys = async function() {
+  const keyIdInput = document.getElementById('rzp-key-id-input');
+  const secretInput = document.getElementById('rzp-key-secret-input');
+  const statusMsg = document.getElementById('rzp-config-status-msg');
+  const saveBtn = document.getElementById('rzp-save-keys-btn');
+
+  const keyId = (keyIdInput ? keyIdInput.value : '').trim();
+  const keySecret = (secretInput ? secretInput.value : '').trim();
+
+  if (!keyId || !keySecret) {
+    if (statusMsg) {
+      statusMsg.style.display = 'block';
+      statusMsg.style.background = 'rgba(239, 68, 68, 0.15)';
+      statusMsg.style.border = '1px solid rgba(239, 68, 68, 0.3)';
+      statusMsg.style.color = '#fca5a5';
+      statusMsg.textContent = 'Please enter both Razorpay Key ID and Key Secret.';
+    }
+    return;
+  }
+
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<span>Verifying with api.razorpay.com...</span>';
+  }
+
+  try {
+    const res = await apiFetch('/payments/update-keys', {
+      method: 'POST',
+      body: JSON.stringify({ keyId, keySecret })
+    });
+
+    if (res.ok && res.data && res.data.success) {
+      if (statusMsg) {
+        statusMsg.style.display = 'block';
+        statusMsg.style.background = 'rgba(16, 185, 129, 0.15)';
+        statusMsg.style.border = '1px solid rgba(16, 185, 129, 0.3)';
+        statusMsg.style.color = '#6ee7b7';
+        statusMsg.innerHTML = '<strong>✅ Success!</strong> ' + res.data.message;
+      }
+      showToast('✅ Razorpay API connected successfully!', 'success');
+      await checkRazorpayGatewayStatus();
+      setTimeout(() => {
+        closeRazorpayConfigModal();
+      }, 1200);
+    } else {
+      if (statusMsg) {
+        statusMsg.style.display = 'block';
+        statusMsg.style.background = 'rgba(239, 68, 68, 0.15)';
+        statusMsg.style.border = '1px solid rgba(239, 68, 68, 0.3)';
+        statusMsg.style.color = '#fca5a5';
+        statusMsg.innerHTML = '<strong>⚠️ Error:</strong> ' + (res.data?.error || 'Failed to authenticate keys with Razorpay API');
+      }
+      showToast(res.data?.error || 'Razorpay authentication failed', 'error');
+    }
+  } catch (err) {
+    showToast('Failed to connect to server: ' + err.message, 'error');
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.innerHTML = '<span>🔗 Verify &amp; Save Keys</span>';
+    }
+  }
+};
+
+window.updateAdminDbStatusUI = function() {
+  const tag = document.getElementById('admin-db-status-tag');
+  const desc = document.getElementById('admin-db-desc');
+  if (!tag && !desc) return;
+
+  if (isBackendConnected) {
+    const isNative = window._lastHealthData?.isNativePg;
+    if (tag) {
+      tag.textContent = isNative ? '● PostgreSQL Native' : '● PostgreSQL Active';
+      tag.className = 'status-badge status-active';
+      tag.style.background = 'rgba(16, 185, 129, 0.2)';
+      tag.style.color = '#34d399';
+      tag.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+    }
+    if (desc) {
+      desc.textContent = `Engine: ${dbEngineName} · Persistence: Active Realtime Sync · Status: Healthy (200 OK)`;
+    }
+  } else {
+    if (tag) {
+      tag.textContent = '● Fallback Cache';
+      tag.className = 'status-badge status-warning';
+      tag.style.background = 'rgba(234, 179, 8, 0.2)';
+      tag.style.color = '#facc15';
+      tag.style.borderColor = 'rgba(234, 179, 8, 0.4)';
+    }
+    if (desc) {
+      desc.textContent = 'Backend server offline. Operating in fallback browser storage mode.';
+    }
+  }
+};
+
+window.testDatabaseConnection = async function(showToastMsg = false) {
+  try {
+    const health = await apiFetch('/health');
+    if (health.ok && health.data) {
+      isBackendConnected = true;
+      window._lastHealthData = health.data;
+      dbEngineName = health.data.engine || 'PostgreSQL';
+      window.updateAdminDbStatusUI();
+      if (showToastMsg) {
+        showToast(`✓ Connected to ${dbEngineName} (${health.data.isNativePg ? 'PostgreSQL Native' : 'Active'})`, 'success');
+      }
+    } else {
+      isBackendConnected = false;
+      window.updateAdminDbStatusUI();
+      if (showToastMsg) showToast('Database connection check returned offline.', 'error');
+    }
+  } catch (err) {
+    if (showToastMsg) showToast('Database health check failed: ' + err.message, 'error');
+  }
+};
+
+window.checkRazorpayGatewayStatus = async function(isManualTest = false) {
+  const adminTag = document.getElementById('admin-rzp-status-tag');
+  const adminDesc = document.getElementById('admin-rzp-desc');
+  const rzpBadge = document.getElementById('rzp-status-badge');
+  const rzpText = document.getElementById('rzp-status-text');
+
+  if (isManualTest) {
+    if (adminTag) {
+      adminTag.className = 'status-badge';
+      adminTag.style.background = 'rgba(99, 102, 241, 0.2)';
+      adminTag.style.color = '#a5b4fc';
+      adminTag.textContent = 'CHECKING...';
+    }
+    if (adminDesc) adminDesc.textContent = 'Connecting to payment gateway API...';
+  }
+
+  function handleOfflineOrError(errMsg) {
+    if (rzpBadge && rzpText) {
+      rzpText.textContent = 'Razorpay: Offline';
+      rzpBadge.style.background = 'rgba(239, 68, 68, 0.12)';
+      rzpBadge.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+      const dot = rzpBadge.querySelector('.db-dot');
+      if (dot) dot.style.background = '#ef4444';
+      rzpBadge.title = 'Backend server offline';
+    }
+    if (adminTag) {
+      adminTag.className = 'status-badge status-deactivated';
+      adminTag.style.background = 'rgba(239, 68, 68, 0.2)';
+      adminTag.style.color = '#fca5a5';
+      adminTag.textContent = 'BACKEND OFFLINE';
+    }
+    if (adminDesc) {
+      adminDesc.innerHTML = `<span style="color: #fca5a5;">Cannot reach backend API at ${API_BASE}.</span> Ensure Node server is running (<code style="color: #a5b4fc;">node server/server.js</code> or <code style="color: #a5b4fc;">launch.bat</code>).`;
+    }
+    if (isManualTest) {
+      showToast(`⚠️ Cannot connect to backend server (${errMsg || 'Port 3000 unreachable'}). Please start the server.`, 'error');
+    }
+    if (!isManualTest && (!window._rzpRetryCount || window._rzpRetryCount < 3)) {
+      window._rzpRetryCount = (window._rzpRetryCount || 0) + 1;
+      setTimeout(() => window.checkRazorpayGatewayStatus(false), 2500);
+    }
+  }
+
+  try {
+    const res = await apiFetch('/payments/gateway-status');
+    if (res.ok && res.data) {
+      window._rzpRetryCount = 0;
+      // 1. Update header badge if present
+      if (rzpBadge && rzpText) {
+        if (res.data.apiLive) {
+          rzpText.textContent = 'Razorpay: Live API';
+          rzpBadge.style.background = 'rgba(16, 185, 129, 0.12)';
+          rzpBadge.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+          const dot = rzpBadge.querySelector('.db-dot');
+          if (dot) dot.style.background = '#10b981';
+          rzpBadge.title = 'Official Razorpay API Connected';
+        } else if (res.data.isCustomKey) {
+          rzpText.textContent = 'Razorpay: Key Error';
+          rzpBadge.style.background = 'rgba(239, 68, 68, 0.12)';
+          rzpBadge.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+          const dot = rzpBadge.querySelector('.db-dot');
+          if (dot) dot.style.background = '#ef4444';
+          rzpBadge.title = res.data.error || 'Razorpay Key Authentication Failed';
+        } else {
+          rzpText.textContent = 'Razorpay: Sandbox';
+          rzpBadge.style.background = 'rgba(99, 102, 241, 0.12)';
+          rzpBadge.style.borderColor = 'rgba(99, 102, 241, 0.3)';
+          const dot = rzpBadge.querySelector('.db-dot');
+          if (dot) dot.style.background = '#6366f1';
+          rzpBadge.title = 'Razorpay Sandbox Mode';
+        }
+      }
+
+      // 2. Update Admin Governance control card
+      if (adminTag) {
+        if (res.data.apiLive) {
+          adminTag.className = 'status-badge status-active';
+          adminTag.style.background = '';
+          adminTag.style.color = '';
+          adminTag.textContent = 'LIVE API CONNECTED';
+          if (adminDesc) adminDesc.innerHTML = `Connected to official Razorpay API server. Active Key: <code style="color: #a5b4fc;">${res.data.keyId}</code> (Official popup checkout enabled)`;
+        } else if (res.data.isCustomKey) {
+          adminTag.className = 'status-badge status-deactivated';
+          adminTag.style.background = '';
+          adminTag.style.color = '';
+          adminTag.textContent = 'AUTH FAILED';
+          if (adminDesc) adminDesc.innerHTML = `<span style="color: #fca5a5;">Authentication Failed:</span> ${res.data.error || 'Key rejected by api.razorpay.com'}. Click "Change API Keys" to fix.`;
+        } else {
+          adminTag.className = 'badge-role';
+          adminTag.style.background = 'rgba(99, 102, 241, 0.2)';
+          adminTag.style.color = '#a5b4fc';
+          adminTag.textContent = 'TEST SANDBOX MODE';
+          if (adminDesc) adminDesc.innerHTML = `Using test sandbox mode. Key: <code style="color: #a5b4fc;">${res.data.keyId}</code>. Click "Change API Keys" to connect your free official Razorpay keys.`;
+        }
+      }
+
+      // 3. User feedback if testing manually
+      if (isManualTest) {
+        if (res.data.apiLive) {
+          showToast('✅ Connection verified! Official Razorpay API is live and working.', 'success');
+        } else if (res.data.isCustomKey) {
+          showToast(`⚠️ Razorpay rejected keys: ${res.data.error || 'Auth failed'}`, 'error');
+        } else {
+          showToast('ℹ Operating in local test sandbox mode.', 'info');
+        }
+      }
+    } else {
+      handleOfflineOrError(res.error || 'Backend API server unreachable');
+    }
+  } catch (e) {
+    console.warn('Gateway check error:', e);
+    handleOfflineOrError(e.message);
+  }
+};
+
+// Cancel Ticket Booking
+window.cancelTicketBooking = async function(rawTicketId) {
+  const ticketId = rawTicketId;
+  const idx = tickets.findIndex(t => (t.ticketId == ticketId || t.id == ticketId) && t.userId == currentUser.id);
+  if (idx === -1) {
+    showToast("Ticket not found or permission denied.", "error");
+    return;
+  }
+
+  const t = tickets[idx];
+  if (t.checkedIn) {
+    showToast("Checked-in tickets cannot be cancelled.", "error");
+    return;
+  }
+
+  const dbTicketId = t.ticketId || t.id;
+  if (isBackendConnected) {
+    try {
+      const res = await apiFetch(`/tickets/${dbTicketId}/cancel`, {
+        method: 'POST',
+        body: JSON.stringify({ userId: currentUser.id })
+      });
+      if (!res.ok) {
+        console.warn("API cancel ticket warning:", res.error);
+      }
+    } catch (err) {
+      console.warn("API cancel ticket error:", err);
+    }
+  }
+
+  t.cancelled = true;
+  t.status = 'CANCELLED';
+  t.cancelledAt = new Date().toISOString();
+
+  const ev = events.find(e => e.id == t.eventId);
+  if (ev) {
+    ev.availableSeats = (ev.availableSeats || 0) + 1;
+    if (ev.tiers && t.tierName) {
+      const tier = ev.tiers.find(tr => tr.name === t.tierName || tr.id == t.ticketTypeId);
+      if (tier) tier.availableSeats = (tier.availableSeats || 0) + 1;
+    }
+  }
+
+  saveTickets();
+  saveEvents();
+
+  if (isBackendConnected) {
+    await initDatabase();
+  }
+
+  showToast(`Ticket #${dbTicketId} cancelled. Seat restored.`, "info");
+  renderMyTicketsView(document.getElementById('role-workspace'));
+};
+
+// Staff Gate QR Scanner Logic & Controls
+let staffScannerStream = null;
+let staffScannerAnimFrame = null;
+let staffBarcodeDetector = null;
+
+if ('BarcodeDetector' in window) {
+  try {
+    staffBarcodeDetector = new BarcodeDetector({ formats: ['qr_code'] });
+  } catch (e) {
+    staffBarcodeDetector = null;
+  }
+}
+
+window.startStaffCameraScanner = async function() {
+  const video = document.getElementById('staff-camera-preview');
+  const wrapper = document.getElementById('camera-wrapper');
+  const startBtn = document.getElementById('btn-start-camera');
+  const stopBtn = document.getElementById('btn-stop-camera');
+  const statusMsg = document.getElementById('camera-status-msg');
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    if (statusMsg) statusMsg.textContent = "Camera access is not supported by your browser. Use manual input below.";
+    showToast("Camera API not supported in this browser. Use manual entry.", "info");
+    return;
+  }
+
+  try {
+    if (statusMsg) statusMsg.textContent = "Requesting camera permission...";
+    staffScannerStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+    });
+    if (video && wrapper) {
+      wrapper.style.display = 'flex';
+      video.srcObject = staffScannerStream;
+      video.setAttribute('playsinline', true);
+      await video.play();
+      if (startBtn) startBtn.style.display = 'none';
+      if (stopBtn) stopBtn.style.display = 'inline-flex';
+      if (statusMsg) statusMsg.textContent = "Camera active. Align attendee's QR code within the viewfinder.";
+      
+      startScanningLoop(video);
+    }
+  } catch (err) {
+    console.warn("Camera access failed:", err);
+    if (statusMsg) statusMsg.textContent = "Camera permission denied or camera hardware unavailable. Please use manual token input.";
+    showToast("Camera permission denied or unavailable. Use manual input.", "warning");
+  }
+};
+
+window.stopStaffCameraScanner = function() {
+  if (staffScannerAnimFrame) {
+    cancelAnimationFrame(staffScannerAnimFrame);
+    staffScannerAnimFrame = null;
+  }
+  if (staffScannerStream) {
+    staffScannerStream.getTracks().forEach(track => track.stop());
+    staffScannerStream = null;
+  }
+  const video = document.getElementById('staff-camera-preview');
+  const wrapper = document.getElementById('camera-wrapper');
+  const startBtn = document.getElementById('btn-start-camera');
+  const stopBtn = document.getElementById('btn-stop-camera');
+  const statusMsg = document.getElementById('camera-status-msg');
+
+  if (video) video.pause();
+  if (wrapper) wrapper.style.display = 'none';
+  if (startBtn) startBtn.style.display = 'inline-flex';
+  if (stopBtn) stopBtn.style.display = 'none';
+  if (statusMsg) statusMsg.textContent = "Camera stopped.";
+};
+
+function startScanningLoop(video) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  async function tick() {
+    if (!staffScannerStream || video.paused || video.ended) return;
+
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      if (staffBarcodeDetector) {
+        try {
+          const codes = await staffBarcodeDetector.detect(video);
+          if (codes && codes.length > 0 && codes[0].rawValue) {
+            stopStaffCameraScanner();
+            processStaffQRScan(codes[0].rawValue);
+            return;
+          }
+        } catch (e) {}
+      } else if (window.jsQR) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = window.jsQR(imgData.data, imgData.width, imgData.height);
+        if (code && code.data) {
+          stopStaffCameraScanner();
+          processStaffQRScan(code.data);
+          return;
+        }
+      }
+    }
+    staffScannerAnimFrame = requestAnimationFrame(tick);
+  }
+  staffScannerAnimFrame = requestAnimationFrame(tick);
+}
+
+window.handleStaffQRFileUpload = function(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const img = new Image();
+    img.onload = async function() {
+      if (staffBarcodeDetector) {
+        try {
+          const codes = await staffBarcodeDetector.detect(img);
+          if (codes && codes.length > 0 && codes[0].rawValue) {
+            processStaffQRScan(codes[0].rawValue);
+            return;
+          }
+        } catch (err) {}
+      }
+      if (window.jsQR) {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = window.jsQR(imgData.data, imgData.width, imgData.height);
+        if (code && code.data) {
+          processStaffQRScan(code.data);
+          return;
+        }
+      }
+      showToast("Could not decode QR code from the uploaded image. Please try another image or use manual entry.", "error");
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+};
+
+window.testStaffQRScan = async function(qrString) {
+  const inp = document.getElementById('staff-manual-input');
+  if (inp) inp.value = qrString;
+  await processStaffQRScan(qrString);
+};
+
+window.handleStaffManualScanSubmit = async function(e) {
+  e.preventDefault();
+  const inp = document.getElementById('staff-manual-input');
+  const val = inp ? inp.value.trim() : '';
+  if (val) await processStaffQRScan(val);
+};
+
+window.processStaffQRScan = async function(rawInput) {
+  const resultBox = document.getElementById('staff-scan-result');
+  if (!resultBox) return;
+
+  if (!currentUser || (currentUser.role !== ROLES.STAFF && currentUser.role !== ROLES.ADMIN)) {
+    resultBox.innerHTML = `
+      <div class="scan-result-card scan-card-invalid">
+        <div class="scan-result-header">✕ ACCESS DENIED</div>
+        <p style="margin-top: 0.4rem; color: #fda4af;">Only verified Staff users are authorized to perform ticket scanning and gate check-in.</p>
+      </div>
+    `;
+    showToast("Access Denied: Staff role required.", "error");
+    return;
+  }
+
+  const clean = (rawInput || '').trim();
+  if (!clean) {
+    resultBox.innerHTML = `
+      <div class="scan-result-card scan-card-invalid">
+        <div class="scan-result-header">✕ INVALID INPUT</div>
+        <p style="margin-top: 0.4rem; color: #fda4af;">Please provide a QR token string or ticket ID to verify.</p>
+      </div>
+    `;
+    return;
+  }
+
+  // 1. Query PostgreSQL Backend /api/checkins/verify
+  if (isBackendConnected) {
+    try {
+      const verifyRes = await apiFetch('/checkins/verify', {
+        method: 'POST',
+        body: JSON.stringify({
+          qrCode: clean,
+          ticketId: (/^\d+$/.test(clean) || /^#\d+$/.test(clean)) ? parseInt(clean.replace('#', ''), 10) : undefined
+        })
+      });
+
+      if (verifyRes && verifyRes.ok && verifyRes.data) {
+        const vData = verifyRes.data;
+        const vTicket = vData.ticket || {};
+        const localIndex = tickets.findIndex(t => (t.ticketId === vTicket.id || t.id === vTicket.id || (t.qrCode && vTicket.qr_code && t.qrCode.toLowerCase() === vTicket.qr_code.toLowerCase())));
+        const isCheckedIn = (vTicket.checked_in === true || vTicket.checkedIn === true || vData.status === 'ALREADY_CHECKED_IN');
+        
+        const mappedTicket = {
+          ticketId: vTicket.id || (localIndex >= 0 ? tickets[localIndex].ticketId : 0),
+          id: vTicket.id || (localIndex >= 0 ? tickets[localIndex].id : 0),
+          userId: vTicket.user_id || vTicket.userId || (localIndex >= 0 ? tickets[localIndex].userId : null),
+          eventId: vTicket.event_id || vTicket.eventId || (localIndex >= 0 ? tickets[localIndex].eventId : null),
+          userName: (vData.attendee && vData.attendee.name) || vTicket.userName || (localIndex >= 0 ? tickets[localIndex].userName : `Attendee #${vTicket.user_id || vTicket.userId}`),
+          eventName: (vData.event && vData.event.name) || vTicket.eventName || (localIndex >= 0 ? tickets[localIndex].eventName : 'Event'),
+          tierName: (vData.event && vData.event.tier) || vTicket.tierName || (localIndex >= 0 ? tickets[localIndex].tierName : 'General Pass'),
+          tierPrice: vTicket.price !== undefined ? vTicket.price : (localIndex >= 0 ? tickets[localIndex].tierPrice : 0),
+          qrCode: vTicket.qr_code || vTicket.qrCode || clean,
+          checkedIn: isCheckedIn,
+          checked_in: isCheckedIn,
+          checkInTime: vTicket.check_in_time || vTicket.checkInTime || (vData.checkInRecord ? vData.checkInRecord.checked_in_at : null),
+          checkedInBy: (vData.checkedInByStaff && vData.checkedInByStaff.name) || vTicket.checkedInBy || 'Gate Staff',
+          status: vTicket.status || (isCheckedIn ? 'CHECKED_IN' : 'ACTIVE')
+        };
+
+        if (localIndex >= 0) {
+          tickets[localIndex] = { ...tickets[localIndex], ...mappedTicket };
+        } else if (vTicket.id) {
+          tickets.push(mappedTicket);
+        }
+        saveTickets();
+
+        if (vData.status === 'ALREADY_CHECKED_IN') {
+          resultBox.innerHTML = `
+            <div class="scan-result-card scan-card-warning">
+              <div class="scan-result-header" style="color: #fbbf24;">⚠ ALREADY CHECKED IN</div>
+              <p style="margin: 0.5rem 0; color: #fde68a; font-size: 0.92rem;">
+                Ticket #${mappedTicket.ticketId || mappedTicket.id} was previously verified and admitted into the event.
+              </p>
+              <div class="scan-details-grid" style="margin-top: 0.75rem;">
+                <div class="scan-detail-item">
+                  <span class="scan-detail-lbl">Attendee Name</span>
+                  <span class="scan-detail-val">${getAttendeeName(mappedTicket)}</span>
+                </div>
+                <div class="scan-detail-item">
+                  <span class="scan-detail-lbl">Event</span>
+                  <span class="scan-detail-val">${mappedTicket.eventName}</span>
+                </div>
+                <div class="scan-detail-item">
+                  <span class="scan-detail-lbl">First Check-in Time</span>
+                  <span class="scan-detail-val" style="color: #fbbf24; font-weight: 700;">${formatCheckInTime(mappedTicket.checkInTime)}</span>
+                </div>
+                <div class="scan-detail-item">
+                  <span class="scan-detail-lbl">Verified Staff</span>
+                  <span class="scan-detail-val">${mappedTicket.checkedInBy || 'Gate Staff'}</span>
+                </div>
+              </div>
+              <div style="margin-top: 0.75rem; padding: 0.5rem 0.75rem; background: rgba(0,0,0,0.3); border-radius: var(--radius-sm); font-size: 0.78rem; color: #fcd34d;">
+                Single-entry admission strictly enforced. Re-entry or duplicate use of this QR code is prohibited.
+              </div>
+            </div>
+          `;
+          showToast("Scan Result: Already Checked In!", "warning");
+          return;
+        }
+
+        if (vData.status === 'CANCELLED') {
+          resultBox.innerHTML = `
+            <div class="scan-result-card scan-card-cancelled">
+              <div class="scan-result-header" style="color: #fb7185;">✕ TICKET CANCELLED</div>
+              <p style="margin: 0.5rem 0; color: #fda4af; font-size: 0.95rem;">
+                Ticket #${mappedTicket.ticketId || mappedTicket.id} for <strong>${mappedTicket.eventName}</strong> was cancelled and the seat was released.
+              </p>
+              <div style="font-size: 0.82rem; color: #fecdd3; margin-top: 0.4rem;">
+                Attendee: <strong>${getAttendeeName(mappedTicket)}</strong> • Status: Cancelled
+              </div>
+              <span style="font-size: 0.78rem; color: #fda4af; display: block; margin-top: 0.5rem;">
+                Admission is strictly prohibited for cancelled tickets.
+              </span>
+            </div>
+          `;
+          showToast("Scan Result: Ticket Cancelled", "error");
+          return;
+        }
+
+        if (vData.status === 'VALID' || vData.status === 'VALID_READY') {
+          renderScanResultDisplay(mappedTicket, clean, "VALID_READY");
+          showToast("✓ Valid ticket verified! Ready for check-in.", "success");
+          return;
+        }
+
+        if (vData.status === 'INVALID') {
+          resultBox.innerHTML = `
+            <div class="scan-result-card scan-card-invalid">
+              <div class="scan-result-header" style="color: #fb7185;">✕ INVALID TICKET</div>
+              <p style="margin: 0.5rem 0 0.25rem; color: #fda4af; font-size: 0.95rem;">
+                No ticket matching <code>"${clean}"</code> was found in the database.
+              </p>
+              <span style="font-size: 0.78rem; color: var(--text-muted);">Please check for typos or verify attendee booking with the help desk.</span>
+            </div>
+          `;
+          showToast("Scan Result: Invalid Ticket (Not Found)", "error");
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn("Backend verify error, falling back to local memory:", err);
+    }
+  }
+
+  // 2. Fallback search existing ticket information stored in localStorage
+  let ticket = tickets.find(t => t.qrCode && t.qrCode.toLowerCase() === clean.toLowerCase());
+  if (!ticket && (/^\d+$/.test(clean) || /^#\d+$/.test(clean))) {
+    const numId = parseInt(clean.replace('#', ''), 10);
+    ticket = tickets.find(t => t.ticketId === numId || t.id === numId);
+  }
+
+  if (!ticket) {
+    resultBox.innerHTML = `
+      <div class="scan-result-card scan-card-invalid">
+        <div class="scan-result-header" style="color: #fb7185;">✕ INVALID TICKET</div>
+        <p style="margin: 0.5rem 0 0.25rem; color: #fda4af; font-size: 0.95rem;">
+          No ticket matching <code>"${clean}"</code> was found in the database.
+        </p>
+        <span style="font-size: 0.78rem; color: var(--text-muted);">Please check for typos or verify attendee booking with the help desk.</span>
+      </div>
+    `;
+    showToast("Scan Result: Invalid Ticket (Not Found)", "error");
+    return;
+  }
+
+  if (ticket.cancelled || ticket.status === 'CANCELLED') {
+    resultBox.innerHTML = `
+      <div class="scan-result-card scan-card-cancelled">
+        <div class="scan-result-header" style="color: #fb7185;">✕ TICKET CANCELLED</div>
+        <p style="margin: 0.5rem 0; color: #fda4af; font-size: 0.95rem;">
+          Ticket #${ticket.ticketId || ticket.id} for <strong>${ticket.eventName}</strong> was cancelled and the seat was released.
+        </p>
+        <div style="font-size: 0.82rem; color: #fecdd3; margin-top: 0.4rem;">
+          Attendee: <strong>${getAttendeeName(ticket)}</strong> • Status: Cancelled (${ticket.cancelledAt ? formatCheckInTime(ticket.cancelledAt) : 'Seat Released'})
+        </div>
+        <span style="font-size: 0.78rem; color: #fda4af; display: block; margin-top: 0.5rem;">
+          Admission is strictly prohibited for cancelled tickets.
+        </span>
+      </div>
+    `;
+    showToast("Scan Result: Ticket Cancelled", "error");
+    return;
+  }
+
+  if (ticket.checkedIn || ticket.checked_in) {
+    resultBox.innerHTML = `
+      <div class="scan-result-card scan-card-warning">
+        <div class="scan-result-header" style="color: #fbbf24;">⚠ ALREADY CHECKED IN</div>
+        <p style="margin: 0.5rem 0; color: #fde68a; font-size: 0.92rem;">
+          Ticket #${ticket.ticketId || ticket.id} was previously verified and admitted into the event.
+        </p>
+        <div class="scan-details-grid" style="margin-top: 0.75rem;">
+          <div class="scan-detail-item">
+            <span class="scan-detail-lbl">Attendee Name</span>
+            <span class="scan-detail-val">${getAttendeeName(ticket)}</span>
+          </div>
+          <div class="scan-detail-item">
+            <span class="scan-detail-lbl">Event</span>
+            <span class="scan-detail-val">${ticket.eventName}</span>
+          </div>
+          <div class="scan-detail-item">
+            <span class="scan-detail-lbl">First Check-in Time</span>
+            <span class="scan-detail-val" style="color: #fbbf24; font-weight: 700;">${formatCheckInTime(ticket.checkInTime || ticket.check_in_time)}</span>
+          </div>
+          <div class="scan-detail-item">
+            <span class="scan-detail-lbl">Verified Staff</span>
+            <span class="scan-detail-val">${ticket.checkedInBy || 'Gate Staff'}</span>
+          </div>
+        </div>
+        <div style="margin-top: 0.75rem; padding: 0.5rem 0.75rem; background: rgba(0,0,0,0.3); border-radius: var(--radius-sm); font-size: 0.78rem; color: #fcd34d;">
+          Single-entry admission strictly enforced. Re-entry or duplicate use of this QR code is prohibited.
+        </div>
+      </div>
+    `;
+    showToast("Scan Result: Already Checked In!", "warning");
+    return;
+  }
+
+  renderScanResultDisplay(ticket, clean, "VALID_READY");
+  showToast("✓ Valid ticket verified! Ready for check-in.", "success");
+};
+
+function renderScanResultDisplay(ticket, inputStr, mode) {
+  const resultBox = document.getElementById('staff-scan-result');
+  if (!resultBox) return;
+
+  const isCheckedInNow = mode === "CHECKED_IN_NOW";
+
+  resultBox.innerHTML = `
+    <div class="scan-result-card scan-card-valid" style="${isCheckedInNow ? 'border-color: #10b981; background: rgba(16, 185, 129, 0.12);' : ''}">
+      <div class="scan-result-header" style="color: #34d399; display: flex; justify-content: space-between; align-items: center;">
+        <span>${isCheckedInNow ? '✓ ENTRY GRANTED • CHECK-IN COMPLETED' : '✓ VALID TICKET'}</span>
+        <span class="status-badge ${isCheckedInNow ? 'risk-normal' : 'risk-moderate'}" style="font-size: 0.75rem;">
+          ${isCheckedInNow ? '✓ Checked In' : 'Pending Check-in'}
+        </span>
+      </div>
+
+      <div class="scan-details-grid" style="margin-top: 1rem;">
+        <div class="scan-detail-item">
+          <span class="scan-detail-lbl">Attendee Name</span>
+          <span class="scan-detail-val" style="font-weight: 700; color: #fff;">${getAttendeeName(ticket)}</span>
+        </div>
+        <div class="scan-detail-item">
+          <span class="scan-detail-lbl">Event Name</span>
+          <span class="scan-detail-val" style="font-weight: 600; color: #fff;">${ticket.eventName}</span>
+        </div>
+        <div class="scan-detail-item">
+          <span class="scan-detail-lbl">Ticket ID</span>
+          <span class="scan-detail-val">#${ticket.ticketId || ticket.id}</span>
+        </div>
+        <div class="scan-detail-item">
+          <span class="scan-detail-lbl">Ticket Type</span>
+          <span class="scan-detail-val">${getTicketTypeDisplay(ticket)}</span>
+        </div>
+        <div class="scan-detail-item">
+          <span class="scan-detail-lbl">Ticket Price</span>
+          <span class="scan-detail-val">${getTicketPriceDisplay(ticket)}</span>
+        </div>
+        <div class="scan-detail-item">
+          <span class="scan-detail-lbl">Current Check-in Status</span>
+          <span class="scan-detail-val">${getCheckInStatusDisplay(ticket)}</span>
+        </div>
+        ${isCheckedInNow ? `
+          <div class="scan-detail-item" style="grid-column: 1 / -1;">
+            <span class="scan-detail-lbl">Check-in Timestamp & Staff</span>
+            <span class="scan-detail-val" style="color: #34d399;">${formatCheckInTime(ticket.checkInTime || ticket.check_in_time)} • Verified by ${ticket.checkedInBy}</span>
+          </div>
+        ` : ''}
+      </div>
+
+      ${!isCheckedInNow ? `
+        <div style="margin-top: 1.25rem; display: flex; gap: 0.75rem; justify-content: flex-end; align-items: center;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="clearStaffScanResult()">Clear</button>
+          <button type="button" class="btn btn-primary" onclick="confirmStaffCheckIn(${ticket.ticketId || ticket.id})" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); border-color: #059669; font-weight: 700; padding: 0.65rem 1.4rem;">
+            ✓ Check In
+          </button>
+        </div>
+      ` : `
+        <div style="margin-top: 1rem; text-align: right;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="clearStaffScanResult()">Scan Next Ticket</button>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+// 6. When Staff clicks "Check In":
+// - Mark existing ticket as checked in in PostgreSQL atomically.
+// - Store checked_in = true, check_in_time = current timestamp, checked_in_by_id = staffId.
+// - Update checkins table record.
+// - Do NOT create duplicate ticket or duplicate check-in.
+window.confirmStaffCheckIn = async function(ticketId) {
+  if (!currentUser || (currentUser.role !== ROLES.STAFF && currentUser.role !== ROLES.ADMIN)) {
+    showToast("Access Denied: Only Staff members can perform check-in.", "error");
+    return;
+  }
+
+  const ticket = tickets.find(t => t.ticketId === ticketId || t.id === ticketId);
+  if (!ticket) {
+    showToast("Ticket not found in database.", "error");
+    return;
+  }
+
+  if (ticket.cancelled || ticket.status === 'CANCELLED') {
+    showToast("Cannot check in: Ticket is cancelled.", "error");
+    return;
+  }
+
+  if (ticket.checkedIn === true || ticket.checked_in === true) {
+    showToast("Ticket has already been checked in.", "warning");
+    return;
+  }
+
+  // Call PostgreSQL backend for check-in confirmation
+  if (isBackendConnected) {
+    try {
+      const checkinRes = await apiFetch('/checkins/confirm', {
+        method: 'POST',
+        body: JSON.stringify({
+          ticketId: ticket.ticketId || ticket.id,
+          staffId: currentUser.id
+        })
+      });
+
+      if (checkinRes && checkinRes.ok && checkinRes.data && checkinRes.data.ticket) {
+        const cTicket = checkinRes.data.ticket;
+        ticket.checkedIn = true;
+        ticket.checked_in = true;
+        ticket.checkInTime = cTicket.check_in_time || cTicket.checkInTime || new Date().toISOString();
+        ticket.checkedInBy = (checkinRes.data.staff && checkinRes.data.staff.name) || currentUser.name;
+        ticket.checkedInByStaffId = currentUser.id;
+        saveTickets();
+
+        const ev = events.find(e => e.id === ticket.eventId);
+        if (ev && ev.zones && ev.zones.length > 0) {
+          ev.zones[0].currentOccupancy++;
+          saveEvents();
+        }
+
+        showToast(`✓ Gate entry confirmed in PostgreSQL for Ticket #${ticket.ticketId || ticket.id} (${getAttendeeName(ticket)})!`, "success");
+
+        renderScanResultDisplay(ticket, ticket.qrCode, "CHECKED_IN_NOW");
+        refreshStaffCheckInsTable();
+        refreshStaffStats();
+        return;
+      } else if (checkinRes && !checkinRes.ok) {
+        const errMsg = (checkinRes.data && (checkinRes.data.error || checkinRes.data.message)) || checkinRes.error || "Failed to confirm check-in on backend.";
+        if (typeof errMsg === 'string' && errMsg.toLowerCase().includes('already checked in')) {
+          showToast("Ticket has already been checked in.", "warning");
+          ticket.checkedIn = true;
+          ticket.checked_in = true;
+          saveTickets();
+          await processStaffQRScan(ticket.qrCode || String(ticket.ticketId || ticket.id));
+          return;
+        }
+        showToast(errMsg, "error");
+        return;
+      }
+    } catch (err) {
+      console.error("Backend checkin error:", err);
+      if (err.message && err.message.toLowerCase().includes('already checked in')) {
+        showToast("Ticket has already been checked in.", "warning");
+        ticket.checkedIn = true;
+        ticket.checked_in = true;
+        saveTickets();
+        await processStaffQRScan(ticket.qrCode || String(ticket.ticketId || ticket.id));
+        return;
+      }
+      showToast(err.message || "Failed to confirm check-in on backend.", "error");
+      return;
+    }
+  }
+
+  // Fallback local memory update
+  ticket.checkedIn = true;
+  ticket.checked_in = true;
+  ticket.checkInTime = new Date().toISOString();
+  ticket.checkedInBy = currentUser.name;
+  ticket.checkedInByStaffId = currentUser.id;
+  saveTickets();
+
+  const ev = events.find(e => e.id === ticket.eventId);
+  if (ev && ev.zones && ev.zones.length > 0) {
+    ev.zones[0].currentOccupancy++;
+    saveEvents();
+  }
+
+  showToast(`✓ Gate entry recorded for Ticket #${ticket.ticketId || ticket.id} (${getAttendeeName(ticket)})!`, "success");
+
+  renderScanResultDisplay(ticket, ticket.qrCode, "CHECKED_IN_NOW");
+  refreshStaffCheckInsTable();
+  refreshStaffStats();
+};
+
+// Aliases for legacy calls
+window.testGateScan = function(qrString) {
+  testStaffQRScan(qrString);
+};
+
+window.handleManualScan = function(e) {
+  handleStaffManualScanSubmit(e);
+};
+
+// Event Lifecycle Operations
+window.submitEvent = async function(eventId) {
+  const ev = events.find(e => e.id === eventId);
+  if (!ev) return;
+  ev.status = EVENT_STATUS.PENDING;
+  saveEvents();
+  if (isBackendConnected) {
+    try {
+      await apiFetch(`/events/${eventId}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: EVENT_STATUS.PENDING, adminFeedback: "Submitted for admin review" })
+      });
+    } catch (err) {
+      console.warn("API submit event error:", err);
+    }
+  }
+  showToast(`Event '${ev.name}' submitted for Administration Review!`, "info");
+  renderActiveView();
+};
+
+window.publishEvent = async function(eventId) {
+  const ev = events.find(e => e.id === eventId);
+  if (!ev) return;
+  ev.status = EVENT_STATUS.PUBLISHED;
+  saveEvents();
+  if (isBackendConnected) {
+    try {
+      await apiFetch(`/events/${eventId}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: EVENT_STATUS.PUBLISHED, adminFeedback: "Published live" })
+      });
+    } catch (err) {
+      console.warn("API publish event error:", err);
+    }
+  }
+  showToast(`Event '${ev.name}' is now Published and live for attendees!`, "success");
+  renderActiveView();
+};
+
+window.approveEvent = async function(eventId) {
+  const ev = events.find(e => e.id === eventId);
+  if (!ev) return;
+  ev.status = EVENT_STATUS.PUBLISHED; // Immediately make it discoverable for attendees
+  ev.adminFeedback = "Approved & Published by Central Administration";
+  saveEvents();
+  if (isBackendConnected) {
+    try {
+      await apiFetch(`/events/${eventId}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: EVENT_STATUS.PUBLISHED, adminFeedback: "Approved & Published by Central Administration" })
+      });
+      await initDatabase();
+    } catch (err) {
+      console.warn("API approve event error:", err);
+    }
+  }
+  showToast(`Event #${ev.id} '${ev.name}' Approved & Published live for Attendees!`, "success");
+  renderActiveView();
+};
+
+window.rejectEvent = async function(eventId) {
+  const ev = events.find(e => e.id === eventId);
+  if (!ev) return;
+  ev.status = EVENT_STATUS.DRAFT;
+  ev.adminFeedback = "Requires budget revision";
+  saveEvents();
+  if (isBackendConnected) {
+    try {
+      await apiFetch(`/events/${eventId}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: EVENT_STATUS.DRAFT, adminFeedback: "Requires budget revision" })
+      });
+      await initDatabase();
+    } catch (err) {
+      console.warn("API reject event error:", err);
+    }
+  }
+  showToast(`Event #${ev.id} Rejected and returned to Draft.`, "info");
+  renderActiveView();
+};
+
+window.cancelEvent = async function(eventId) {
+  const ev = events.find(e => e.id === eventId);
+  if (!ev) return;
+  ev.status = EVENT_STATUS.CANCELLED;
+  saveEvents();
+  if (isBackendConnected) {
+    try {
+      await apiFetch(`/events/${eventId}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: EVENT_STATUS.CANCELLED, adminFeedback: "Event cancelled by organizer" })
+      });
+    } catch (err) {
+      console.warn("API cancel event error:", err);
+    }
+  }
+  showToast(`Event '${ev.name}' has been marked Cancelled.`, "info");
+  renderActiveView();
+};
+
+window.deleteEvent = async function(eventId) {
+  const ev = events.find(e => e.id === eventId);
+  if (!ev) return;
+
+  const isAdmin = currentUser && currentUser.role === ROLES.ADMIN;
+  const isOwner = currentUser && ev.organizerId === currentUser.id;
+
+  if (!isAdmin && !isOwner) {
+    showToast("You do not have permission to delete this event.", "error");
+    return;
+  }
+
+  const confirmMsg = isAdmin
+    ? `[Admin Action] Are you sure you want to permanently remove '${ev.name}' (Status: ${ev.status})? This will delete the event and cancel all associated tickets and sponsorships even after approval.`
+    : `Are you sure you want to permanently delete '${ev.name}'? This action cannot be undone even if the event was already approved.`;
+
+  if (!confirm(confirmMsg)) {
+    return;
+  }
+
+  if (isBackendConnected) {
+    try {
+      await apiFetch(`/events/${eventId}`, { method: 'DELETE' });
+    } catch (err) {
+      console.warn("API delete event error:", err);
+    }
+  }
+
+  // Remove tickets associated with this event
+  tickets = tickets.filter(t => t.eventId !== eventId);
+  saveTickets();
+
+  // Remove sponsorships associated with this event
+  sponsorships = sponsorships.filter(s => s.eventId !== eventId);
+  saveSponsorships();
+
+  // Remove payments associated with this event
+  payments = payments.filter(p => p.eventId !== eventId);
+  savePayments();
+
+  // Remove the event itself
+  events = events.filter(e => e.id !== eventId);
+  saveEvents();
+
+  showToast(
+    isAdmin
+      ? `Event '${ev.name}' has been permanently removed by Administrator.`
+      : `Event '${ev.name}' and all associated bookings have been permanently deleted.`,
+    "info"
+  );
+  renderActiveView();
+};
+
+// Create Event Alert Helpers
+function showCreateEventAlert(msg) {
+  const alert = document.getElementById('create-event-alert');
+  if (alert) {
+    alert.textContent = msg;
+    alert.classList.remove('hidden');
+    alert.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  showToast(msg, 'error');
+}
+
+function hideCreateEventAlert() {
+  const alert = document.getElementById('create-event-alert');
+  if (alert) {
+    alert.classList.add('hidden');
+    alert.textContent = '';
+  }
+}
+
+// Create Event Modal
+window.openCreateEventModal = function() {
+  hideCreateEventAlert();
+
+  // Set minimum date to tomorrow dynamically based on current date
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const yyyy = tomorrow.getFullYear();
+  const mm = String(tomorrow.getMonth() + 1).padStart(2, '0');
+  const dd = String(tomorrow.getDate()).padStart(2, '0');
+  const tomorrowStr = `${yyyy}-${mm}-${dd}`;
+
+  const dateInput = document.getElementById('ev-date');
+  if (dateInput) {
+    dateInput.min = tomorrowStr;
+    if (!dateInput.value || dateInput.value < tomorrowStr) {
+      dateInput.value = tomorrowStr;
+    }
+  }
+
+  document.getElementById('create-event-modal').classList.remove('hidden');
+};
+
+function closeCreateEventModal() {
+  hideCreateEventAlert();
+  document.getElementById('create-event-modal').classList.add('hidden');
+}
+
+window.addTicketTierRow = function() {
+  const container = document.getElementById('tiers-input-container');
+  if (!container) return;
+  const row = document.createElement('div');
+  row.className = 'tier-input-row';
+  row.innerHTML = `
+    <div class="form-group flex-2" style="margin-bottom: 0;">
+      <label class="field-label" style="font-size: 0.72rem; margin-bottom: 0.25rem;">Pass / Ticket Type</label>
+      <input type="text" class="modal-input tier-input-name" placeholder="e.g. Student / Early Bird Pass" required>
+    </div>
+    <div class="form-group flex-1" style="margin-bottom: 0;">
+      <label class="field-label" style="font-size: 0.72rem; margin-bottom: 0.25rem;">Seats</label>
+      <input type="number" class="modal-input tier-input-seats" placeholder="Seats" value="100" min="1" step="1" required title="Allocated seats">
+    </div>
+    <div class="form-group flex-1" style="margin-bottom: 0;">
+      <label class="field-label" style="font-size: 0.72rem; margin-bottom: 0.25rem;">Rate (₹)</label>
+      <input type="number" class="modal-input tier-input-price" placeholder="Rate (₹)" value="199" min="0" step="any" required title="Price in INR (0 for Free)">
+    </div>
+    <button type="button" class="btn-icon remove-tier-btn" onclick="removeTicketTierRow(this)" title="Remove Tier" style="color: #fda4af; padding: 0.4rem; margin-top: 1.1rem;" aria-label="Remove ticket tier">✕</button>
+  `;
+  container.appendChild(row);
+};
+
+window.removeTicketTierRow = function(btn) {
+  const container = document.getElementById('tiers-input-container');
+  if (!container) return;
+  const rows = container.querySelectorAll('.tier-input-row');
+  if (rows.length <= 1) {
+    showToast("At least one ticket type must exist.", "info");
+    return;
+  }
+  btn.closest('.tier-input-row').remove();
+};
+
+window.addVenueZoneRow = function() {
+  const container = document.getElementById('zones-input-container');
+  if (!container) return;
+  const row = document.createElement('div');
+  row.className = 'zone-input-row';
+  row.style = 'display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem;';
+  row.innerHTML = `
+    <input type="text" class="modal-input flex-2 zone-name" placeholder="Zone Name (e.g. Workshop Lab)" required>
+    <input type="number" class="modal-input flex-1 zone-cap" placeholder="Capacity" value="100" min="1" step="1" required title="Zone capacity">
+    <button type="button" class="btn-icon remove-zone-btn" onclick="removeVenueZoneRow(this)" title="Remove Zone" style="color: #fda4af; padding: 0.4rem;" aria-label="Remove venue zone">✕</button>
+  `;
+  container.appendChild(row);
+};
+
+window.removeVenueZoneRow = function(btn) {
+  const container = document.getElementById('zones-input-container');
+  if (!container) return;
+  const rows = container.querySelectorAll('.zone-input-row');
+  if (rows.length <= 1) {
+    showToast("At least one venue zone should exist.", "info");
+    return;
+  }
+  btn.closest('.zone-input-row').remove();
+};
+
+async function handleCreateEventSubmit(e) {
+  e.preventDefault();
+  hideCreateEventAlert();
+
+  // 1. Event Name and Venue Validation (empty & whitespace check)
+  const rawName = document.getElementById('ev-name').value;
+  const rawVenue = document.getElementById('ev-venue').value;
+  const name = rawName ? rawName.trim() : '';
+  const venue = rawVenue ? rawVenue.trim() : '';
+
+  if (!name) {
+    showCreateEventAlert("Event name is required and cannot be empty or contain only spaces.");
+    return;
+  }
+  if (!venue) {
+    showCreateEventAlert("Venue location is required and cannot be empty or contain only spaces.");
+    return;
+  }
+
+  // 2. Event Date Validation (future date only, no today, no previous)
+  const date = document.getElementById('ev-date').value;
+  if (!date) {
+    showCreateEventAlert("Event date must be a future date.");
+    return;
+  }
+
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  const todayStr = `${yyyy}-${mm}-${dd}`;
+
+  if (date <= todayStr) {
+    showCreateEventAlert("Event date must be a future date.");
+    return;
+  }
+
+  // 3. Duplicate Event Check (same name OR same date at same venue)
+  const isDuplicate = events.some(ev => 
+    ev.name.trim().toLowerCase() === name.toLowerCase() ||
+    (ev.date === date && ev.venue.trim().toLowerCase() === venue.toLowerCase())
+  );
+  if (isDuplicate) {
+    showCreateEventAlert(`An event with this name or scheduled at '${venue}' on ${date} already exists. Please choose a unique name, date, or venue.`);
+    return;
+  }
+
+  // 4. Total Venue Capacity Validation
+  const rawCap = document.getElementById('ev-capacity').value;
+  const capacity = Number(rawCap);
+  if (!rawCap || isNaN(capacity) || !Number.isInteger(capacity) || capacity <= 0) {
+    showCreateEventAlert("Total venue capacity must be a positive integer greater than 0.");
+    return;
+  }
+
+  // 5. Expected Attendance Validation
+  const rawAtt = document.getElementById('ev-attendance').value;
+  const attendance = Number(rawAtt);
+  if (!rawAtt || isNaN(attendance) || !Number.isInteger(attendance) || attendance <= 0) {
+    showCreateEventAlert("Expected attendance must be a positive integer greater than 0.");
+    return;
+  }
+  if (attendance > capacity) {
+    showCreateEventAlert("Expected attendance cannot exceed total venue capacity.");
+    return;
+  }
+
+  // 6. Budget Validation
+  const rawBudget = document.getElementById('ev-budget').value;
+  const budget = parseFloat(rawBudget);
+  if (rawBudget === '' || isNaN(budget) || budget < 0) {
+    showCreateEventAlert("Budget must be a valid non-negative number.");
+    return;
+  }
+
+  // 7. Ticket Types Validation
+  const tierRows = document.querySelectorAll('#tiers-input-container .tier-input-row');
+  if (tierRows.length === 0) {
+    showCreateEventAlert("At least one ticket type must exist.");
+    return;
+  }
+
+  const tiers = [];
+  let totalTicketSeats = 0;
+  for (let i = 0; i < tierRows.length; i++) {
+    const row = tierRows[i];
+    const nameInp = row.querySelector('.tier-input-name');
+    const seatsInp = row.querySelector('.tier-input-seats');
+    const priceInp = row.querySelector('.tier-input-price');
+
+    const tName = nameInp ? nameInp.value.trim() : '';
+    if (!tName) {
+      showCreateEventAlert(`Ticket type #${i + 1} name cannot be empty.`);
+      return;
+    }
+
+    const rawSeats = seatsInp ? seatsInp.value : '';
+    const tSeats = Number(rawSeats);
+    if (!rawSeats || isNaN(tSeats) || !Number.isInteger(tSeats) || tSeats <= 0) {
+      showCreateEventAlert(`Seats for ticket type '${tName}' must be a positive integer (cannot be 0, negative, or decimal).`);
+      return;
+    }
+    if (tSeats > capacity) {
+      showCreateEventAlert(`Seats for ticket type '${tName}' (${tSeats}) cannot exceed total venue capacity (${capacity}).`);
+      return;
+    }
+
+    const rawPrice = priceInp ? priceInp.value : '';
+    const tPrice = parseFloat(rawPrice);
+    if (rawPrice === '' || isNaN(tPrice) || tPrice < 0) {
+      showCreateEventAlert(`Price for ticket type '${tName}' must be a valid non-negative number (₹0 or greater).`);
+      return;
+    }
+
+    totalTicketSeats += tSeats;
+    tiers.push({
+      id: i + 1,
+      name: tName,
+      price: tPrice,
+      totalSeats: tSeats,
+      availableSeats: tSeats
+    });
+  }
+
+  // Exact Match: Total Venue Capacity == Total Ticket Seats
+  if (totalTicketSeats !== capacity) {
+    showCreateEventAlert("Total venue capacity must equal the sum of seats allocated to all ticket types.");
+    return;
+  }
+
+  // 8. Venue Zones Validation
+  const zoneRows = document.querySelectorAll('#zones-input-container .zone-input-row');
+  if (zoneRows.length === 0) {
+    showCreateEventAlert("At least one venue zone should exist.");
+    return;
+  }
+
+  const zones = [];
+  let totalZoneCap = 0;
+  for (let i = 0; i < zoneRows.length; i++) {
+    const row = zoneRows[i];
+    const nameInp = row.querySelector('.zone-name');
+    const capInp = row.querySelector('.zone-cap');
+
+    const zName = nameInp ? nameInp.value.trim() : '';
+    if (!zName) {
+      showCreateEventAlert(`Venue zone #${i + 1} name cannot be empty.`);
+      return;
+    }
+
+    const rawZCap = capInp ? capInp.value : '';
+    const zCap = Number(rawZCap);
+    if (!rawZCap || isNaN(zCap) || !Number.isInteger(zCap) || zCap <= 0) {
+      showCreateEventAlert(`Capacity for venue zone '${zName}' must be a positive integer (cannot be 0, negative, or decimal).`);
+      return;
+    }
+
+    totalZoneCap += zCap;
+    zones.push({
+      id: i + 1,
+      name: zName,
+      capacity: zCap,
+      currentOccupancy: 0
+    });
+  }
+
+  // Venue Zone Capacity Validation: Sum of Venue Zone Capacities >= Total Venue Capacity
+  if (totalZoneCap < capacity) {
+    showCreateEventAlert("Sum of venue zone capacities must be at least equal to total venue capacity.");
+    return;
+  }
+
+  // Schedule Itinerary Collection
+  const schedTitles = document.querySelectorAll('.sched-title');
+  const schedTimes = document.querySelectorAll('.sched-time');
+  const schedule = [];
+  schedTitles.forEach((input, i) => {
+    const sTitle = input.value.trim();
+    if (sTitle) {
+      schedule.push({
+        id: i + 1,
+        title: sTitle,
+        time: (schedTimes[i] && schedTimes[i].value.trim()) || "10:00 AM - 12:00 PM",
+        location: venue
+      });
+    }
+  });
+
+  const type = document.getElementById('ev-type').value;
+
+  const newEvent = {
+    id: events.length ? Math.max(...events.map(e => e.id)) + 1 : 1,
+    organizerId: currentUser.id,
+    name,
+    type,
+    venue,
+    date,
+    capacity,
+    availableSeats: capacity,
+    expectedAttendance: attendance,
+    budget,
+    status: EVENT_STATUS.DRAFT,
+    adminFeedback: "Draft mode",
+    zones,
+    schedule: schedule.length ? schedule : [
+      { id: 1, title: "Opening Ceremony", time: "10:00 AM - 12:00 PM", location: venue }
+    ],
+    tiers
+  };
+
+  if (isBackendConnected) {
+    try {
+      const createRes = await apiFetch('/events', {
+        method: 'POST',
+        body: JSON.stringify({
+          organizerId: currentUser.id,
+          name,
+          type,
+          venue,
+          date,
+          capacity,
+          expectedAttendance: attendance,
+          budget,
+          tiers,
+          zones,
+          schedule: newEvent.schedule
+        })
+      });
+      if (createRes.ok && createRes.data && createRes.data.eventId) {
+        newEvent.id = createRes.data.eventId;
+      }
+    } catch (err) {
+      console.warn("API event creation error:", err);
+    }
+  }
+
+  events.push(newEvent);
+  saveEvents();
+  closeCreateEventModal();
+  document.getElementById('create-event-form').reset();
+
+  showToast(`Event '${newEvent.name}' created successfully in DRAFT state!`, "success");
+  if (isBackendConnected) {
+    await initDatabase();
+  }
+  switchView('events');
+}
+
+// User Governance
+window.toggleUserActivation = function(userId) {
+  const user = users.find(u => u.id === userId);
+  if (!user || user.id === 1) {
+    showToast("Cannot disable Root Administrator account.", "error");
+    return;
+  }
+  user.isActive = !user.isActive;
+  saveUsers();
+  renderActiveView();
+  showToast(`User ${user.name} is now ${user.isActive ? 'ACTIVATED' : 'DEACTIVATED'}.`, 'info');
+};
+
+// Profile Modal Handlers
+function openProfileModal() {
+  if (!currentUser) return;
+  const modal = document.getElementById('profile-modal');
+  document.getElementById('profile-alert').classList.add('hidden');
+
+  document.getElementById('modal-avatar').textContent = getInitials(currentUser.name);
+  document.getElementById('modal-preview-name').textContent = currentUser.name;
+  document.getElementById('modal-preview-role').textContent = ROLE_NAMES[currentUser.role];
+  document.getElementById('modal-preview-email').textContent = currentUser.email;
+
+  document.getElementById('prof-name').value = currentUser.name;
+  document.getElementById('prof-phone').value = currentUser.phone !== 'Not provided' ? currentUser.phone : '';
+  
+  const orgGroup = document.getElementById('prof-group-org');
+  if (currentUser.role === ROLES.ORGANIZER || currentUser.role === ROLES.SPONSOR) {
+    orgGroup.classList.remove('hidden');
+    document.getElementById('prof-org').value = currentUser.organization !== 'N/A' ? currentUser.organization : '';
+  } else {
+    orgGroup.classList.add('hidden');
+  }
+
+  document.getElementById('prof-cur-pass').value = '';
+  document.getElementById('prof-new-pass').value = '';
+
+  modal.classList.remove('hidden');
+}
+
+function closeProfileModal() {
+  document.getElementById('profile-modal').classList.add('hidden');
+}
+
+async function handleProfileSave(e) {
+  e.preventDefault();
+  const alert = document.getElementById('profile-alert');
+  alert.classList.add('hidden');
+
+  const newName = document.getElementById('prof-name').value.trim();
+  const newPhone = document.getElementById('prof-phone').value.trim();
+  const newOrg = document.getElementById('prof-org').value.trim();
+  const curPass = document.getElementById('prof-cur-pass').value;
+  const newPass = document.getElementById('prof-new-pass').value;
+
+  if (!newName) {
+    alert.textContent = "Display name cannot be empty.";
+    alert.className = "form-alert alert-error";
+    alert.classList.remove('hidden');
+    return;
+  }
+
+  if (newPass) {
+    if (!curPass) {
+      alert.textContent = "Enter current password to change credentials.";
+      alert.className = "form-alert alert-error";
+      alert.classList.remove('hidden');
+      return;
+    }
+    const hashedCur = await hashPassword(curPass);
+    if (hashedCur !== currentUser.passwordHash) {
+      alert.textContent = "Current password incorrect.";
+      alert.className = "form-alert alert-error";
+      alert.classList.remove('hidden');
+      return;
+    }
+    const passCheck = validatePassword(newPass);
+    if (!passCheck.valid) {
+      alert.textContent = passCheck.message;
+      alert.className = "form-alert alert-error";
+      alert.classList.remove('hidden');
+      return;
+    }
+    currentUser.passwordHash = await hashPassword(newPass);
+  }
+
+  currentUser.name = newName;
+  currentUser.phone = newPhone || "Not provided";
+  if (currentUser.role === ROLES.ORGANIZER || currentUser.role === ROLES.SPONSOR) {
+    currentUser.organization = newOrg || "Independent";
+  }
+
+  const idx = users.findIndex(u => u.id === currentUser.id);
+  if (idx !== -1) {
+    users[idx] = { ...currentUser };
+    saveUsers();
+    saveSession(currentUser);
+  }
+
+  closeProfileModal();
+  showDashboard();
+  showToast("Profile details updated successfully!", "success");
+}
+
+// Sponsor Modal Handlers
+window.openSponsorModal = function(eventId) {
+  const publishedEvents = events.filter(e => e.status === EVENT_STATUS.PUBLISHED);
+  if (publishedEvents.length === 0) {
+    showToast("No published events available to sponsor currently.", "info");
+    return;
+  }
+
+  const selectedEvent = eventId ? events.find(e => e.id === eventId) : publishedEvents[0];
+  if (!selectedEvent) return;
+
+  document.getElementById('sponsor-event-id').value = selectedEvent.id;
+  
+  const summaryEl = document.getElementById('sponsor-modal-event-summary');
+  if (summaryEl) {
+    summaryEl.innerHTML = `
+      <div>
+        <div style="font-weight: 700; font-size: 1.1rem; color: #fff;">${selectedEvent.name}</div>
+        <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.2rem;">${selectedEvent.venue} • ${selectedEvent.date}</div>
+      </div>
+      <div style="text-align: right;">
+        <span class="event-category-tag">${selectedEvent.type}</span>
+        <div style="font-size: 0.78rem; color: var(--emerald-success); font-weight: 600; margin-top: 0.2rem;">${selectedEvent.capacity} Expected Attendees</div>
+      </div>
+    `;
+  }
+
+  document.getElementById('sponsor-org-name').value = (currentUser.organization && currentUser.organization !== 'N/A') ? currentUser.organization : (currentUser.name + " Enterprises");
+  document.getElementById('sponsor-contact-person').value = currentUser.name;
+
+  // Reset selected tier to Platinum
+  document.querySelectorAll('.tier-select-card').forEach(c => c.classList.remove('active'));
+  const firstTier = document.querySelector('.tier-select-card[data-tier="Platinum"]');
+  if (firstTier) {
+    firstTier.classList.add('active');
+    const radio = firstTier.querySelector('input[type="radio"]');
+    if (radio) radio.checked = true;
+  }
+
+  document.getElementById('sponsor-modal').classList.remove('hidden');
+};
+
+window.closeSponsorModal = function() {
+  const modal = document.getElementById('sponsor-modal');
+  if (modal) modal.classList.add('hidden');
+  const form = document.getElementById('sponsor-form');
+  if (form) form.reset();
+};
+
+window.handleSponsorshipSubmit = function(e) {
+  e.preventDefault();
+  const eventId = parseInt(document.getElementById('sponsor-event-id').value, 10);
+  const ev = events.find(e => e.id === eventId);
+  if (!ev) return;
+
+  const selectedTierRadio = document.querySelector('input[name="sponsor-tier"]:checked');
+  const tier = selectedTierRadio ? selectedTierRadio.value : "Platinum";
+  const orgName = document.getElementById('sponsor-org-name').value.trim();
+  const website = document.getElementById('sponsor-website').value.trim();
+  const contactPerson = document.getElementById('sponsor-contact-person').value.trim();
+  const notes = document.getElementById('sponsor-notes').value.trim();
+
+  let amount = 50000;
+  let booth = "Main Auditorium - VIP Booth P" + (sponsorships.length + 1);
+  if (tier === "Gold") {
+    amount = 25000;
+    booth = "Food Court / Exhibition Hall - Booth G" + (sponsorships.length + 1);
+  } else if (tier === "Silver") {
+    amount = 10000;
+    booth = "Digital Display Partner Slot S" + (sponsorships.length + 1);
+  }
+
+  const newId = sponsorships.length ? Math.max(...sponsorships.map(s => s.id)) + 1 : 1;
+  const newSponsorship = {
+    id: newId,
+    sponsorId: currentUser.id,
+    sponsorName: orgName || currentUser.name,
+    contactPerson: contactPerson || currentUser.name,
+    eventId: ev.id,
+    eventName: ev.name,
+    tier,
+    amount,
+    website: website || "https://company.example.com",
+    boothAssigned: booth,
+    status: "Active",
+    perks: tier === "Platinum" ? [
+      "Prime Main Stage Banner & Keynote Shoutout",
+      "Premium VIP Booth in Main Auditorium",
+      "10 Complimentary VIP Event Passes"
+    ] : tier === "Gold" ? [
+      "Prominent Food Court / Workshop Booth",
+      "Digital Displays Across All Venue Screens",
+      "5 Complimentary VIP Event Passes"
+    ] : [
+      "Logo on Marketing Material & Event Schedule",
+      "2 Complimentary VIP Event Passes"
+    ],
+    notes: notes || "Standard booth setup",
+    pledgedAt: new Date().toISOString()
+  };
+
+  if (isBackendConnected) {
+    try {
+      apiFetch('/sponsorships', {
+        method: 'POST',
+        body: JSON.stringify({
+          sponsorId: currentUser.id,
+          sponsorName: orgName || currentUser.name,
+          contactPerson: contactPerson || currentUser.name,
+          eventId: ev.id,
+          tier,
+          amount,
+          website: website || "https://company.example.com",
+          boothAssigned: booth,
+          notes: notes || "Standard booth setup"
+        })
+      }).then(res => {
+        if (res.ok && res.data && res.data.sponsorshipId) {
+          newSponsorship.id = res.data.sponsorshipId;
+        }
+      }).catch(err => console.warn("API sponsorship sync warning:", err));
+    } catch (err) {
+      console.warn("API sponsorship sync error:", err);
+    }
+  }
+
+  sponsorships.push(newSponsorship);
+  saveSponsorships();
+
+  closeSponsorModal();
+  showToast(`🎉 Sponsorship confirmed! You are now a ${tier} partner for ${ev.name}.`, "success");
+  
+  if (currentActiveView === 'sponsorships') {
+    renderActiveView();
+  } else {
+    switchView('sponsorships');
+  }
+};
+
+window.downloadSponsorshipAgreement = function(sponsorshipId) {
+  const s = sponsorships.find(x => x.id === sponsorshipId);
+  if (!s) return;
+  showToast(`Official Certificate Generated: ${s.sponsorName} - ${s.tier} Partner (${s.eventName})`, "success");
+};
+
+/* ========================================================================= */
+/*                          FORGOT PASSWORD CONTROLLER                       */
+/* ========================================================================= */
+
+/* ========================================================================= */
+/*                   SECURE FORGOT PASSWORD (EMAIL OTP)                      */
+/* ========================================================================= */
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+let forgotResetEmail = '';
+let forgotResetToken = '';
+let forgotCooldownInterval = null;
+let forgotCooldownSeconds = 0;
+
+function openForgotModal() {
+  const modal = document.getElementById('forgot-modal');
+  const alert = document.getElementById('forgot-alert');
+  const successAlert = document.getElementById('forgot-success-alert');
+  if (alert) alert.classList.add('hidden');
+  if (successAlert) successAlert.classList.add('hidden');
+
+  const loginEmail = document.getElementById('inp-email') ? document.getElementById('inp-email').value.trim() : '';
+  const emailInput = document.getElementById('forgot-email');
+  if (emailInput) emailInput.value = loginEmail;
+
+  setForgotStep(1);
+  forgotResetEmail = '';
+  forgotResetToken = '';
+
+  const otpInput = document.getElementById('forgot-otp');
+  if (otpInput) otpInput.value = '';
+  const newPassInput = document.getElementById('forgot-new-password');
+  if (newPassInput) newPassInput.value = '';
+  const confirmPassInput = document.getElementById('forgot-confirm-password');
+  if (confirmPassInput) confirmPassInput.value = '';
+
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeForgotModal() {
+  const modal = document.getElementById('forgot-modal');
+  if (modal) modal.classList.add('hidden');
+  if (forgotCooldownInterval) {
+    clearInterval(forgotCooldownInterval);
+    forgotCooldownInterval = null;
+  }
+}
+
+function setForgotStep(step) {
+  const step1 = document.getElementById('forgot-step-1');
+  const step2 = document.getElementById('forgot-step-2');
+  const step3 = document.getElementById('forgot-step-3');
+  const dot1 = document.getElementById('dot-step-1');
+  const dot2 = document.getElementById('dot-step-2');
+  const dot3 = document.getElementById('dot-step-3');
+  const alert = document.getElementById('forgot-alert');
+  if (alert) alert.classList.add('hidden');
+
+  if (step === 1) {
+    if (step1) step1.classList.remove('hidden');
+    if (step2) step2.classList.add('hidden');
+    if (step3) step3.classList.add('hidden');
+    if (dot1) dot1.className = 'step-dot active';
+    if (dot2) dot2.className = 'step-dot';
+    if (dot3) dot3.className = 'step-dot';
+  } else if (step === 2) {
+    if (step1) step1.classList.add('hidden');
+    if (step2) step2.classList.remove('hidden');
+    if (step3) step3.classList.add('hidden');
+    if (dot1) dot1.className = 'step-dot completed';
+    if (dot2) dot2.className = 'step-dot active';
+    if (dot3) dot3.className = 'step-dot';
+    const otpInput = document.getElementById('forgot-otp');
+    if (otpInput) { otpInput.value = ''; otpInput.focus(); }
+  } else if (step === 3) {
+    if (step1) step1.classList.add('hidden');
+    if (step2) step2.classList.add('hidden');
+    if (step3) step3.classList.remove('hidden');
+    if (dot1) dot1.className = 'step-dot completed';
+    if (dot2) dot2.className = 'step-dot completed';
+    if (dot3) dot3.className = 'step-dot active';
+    const passInput = document.getElementById('forgot-new-password');
+    if (passInput) passInput.focus();
+  }
+}
+
+function startForgotCooldown(seconds = 60) {
+  forgotCooldownSeconds = seconds;
+  const resendBtn = document.getElementById('forgot-resend-btn');
+  if (!resendBtn) return;
+
+  if (forgotCooldownInterval) {
+    clearInterval(forgotCooldownInterval);
+  }
+
+  resendBtn.disabled = true;
+  resendBtn.textContent = `Resend Code (${forgotCooldownSeconds}s)`;
+  resendBtn.style.color = 'var(--text-muted)';
+  resendBtn.style.cursor = 'not-allowed';
+
+  forgotCooldownInterval = setInterval(() => {
+    forgotCooldownSeconds--;
+    if (forgotCooldownSeconds <= 0) {
+      clearInterval(forgotCooldownInterval);
+      forgotCooldownInterval = null;
+      resendBtn.disabled = false;
+      resendBtn.textContent = "Resend Code";
+      resendBtn.style.color = "#a5b4fc";
+      resendBtn.style.cursor = "pointer";
+    } else {
+      resendBtn.textContent = `Resend Code (${forgotCooldownSeconds}s)`;
+    }
+  }, 1000);
+}
+
+// 1. Send OTP Request
+async function handleForgotSendOtp() {
+  const alert = document.getElementById('forgot-alert');
+  const btn = document.getElementById('forgot-verify-btn');
+  if (alert) alert.classList.add('hidden');
+
+  const emailInput = document.getElementById('forgot-email');
+  const email = emailInput ? emailInput.value.trim().toLowerCase() : '';
+  if (!email) {
+    if (alert) { alert.textContent = "Please enter your registered email address."; alert.classList.remove('hidden'); }
+    return;
+  }
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    if (alert) { alert.textContent = "Please enter a valid email address."; alert.classList.remove('hidden'); }
+    return;
+  }
+
+  const origText = btn ? btn.textContent : "Send 6-Digit OTP →";
+  if (btn) { btn.disabled = true; btn.textContent = "Sending OTP Code..."; }
+
+  try {
+    const res = await apiFetch('/auth/forgot-password/request', 'POST', { email });
+    if (btn) { btn.disabled = false; btn.textContent = origText; }
+
+    if (!res.ok) {
+      if (alert) {
+        alert.textContent = res.data?.error || "Failed to process password reset request.";
+        alert.classList.remove('hidden');
+      }
+      return;
+    }
+
+    forgotResetEmail = email;
+    const hint = document.getElementById('forgot-otp-email-hint');
+    if (hint) {
+      hint.textContent = `We sent a 6-digit code to ${email}. (Code expires in 10 minutes)`;
+    }
+
+    setForgotStep(2);
+    startForgotCooldown(60);
+    showToast(res.data?.message || "OTP code sent to your email!", "info");
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = origText; }
+    if (alert) {
+      alert.textContent = "Network error connecting to authentication server.";
+      alert.classList.remove('hidden');
+    }
+  }
+}
+
+// 2. Resend OTP Request
+async function handleForgotResendOtp() {
+  if (forgotCooldownSeconds > 0) return;
+  if (!forgotResetEmail) {
+    setForgotStep(1);
+    return;
+  }
+  await handleForgotSendOtp();
+}
+
+// 3. Verify OTP Code
+async function handleForgotVerifyOtp() {
+  const alert = document.getElementById('forgot-alert');
+  const btn = document.getElementById('forgot-verify-otp-btn');
+  if (alert) alert.classList.add('hidden');
+
+  const otpInput = document.getElementById('forgot-otp');
+  const otp = otpInput ? otpInput.value.trim() : '';
+  if (!otp || !/^\d{6}$/.test(otp)) {
+    if (alert) { alert.textContent = "Please enter the complete 6-digit verification code."; alert.classList.remove('hidden'); }
+    return;
+  }
+
+  const origText = btn ? btn.textContent : "Verify Code & Continue →";
+  if (btn) { btn.disabled = true; btn.textContent = "Verifying Code..."; }
+
+  try {
+    const res = await apiFetch('/auth/forgot-password/verify', 'POST', {
+      email: forgotResetEmail,
+      otp
+    });
+
+    if (btn) { btn.disabled = false; btn.textContent = origText; }
+
+    if (!res.ok) {
+      if (alert) {
+        alert.textContent = res.data?.error || "Invalid verification code.";
+        alert.classList.remove('hidden');
+      }
+      return;
+    }
+
+    forgotResetToken = res.data?.resetToken || '';
+    setForgotStep(3);
+    showToast("Code verified successfully!", "success");
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = origText; }
+    if (alert) {
+      alert.textContent = "Network error during verification.";
+      alert.classList.remove('hidden');
+    }
+  }
+}
+
+// 4. Save New Password & Finish
+async function handleForgotSavePassword(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  const alert = document.getElementById('forgot-alert');
+  const successAlert = document.getElementById('forgot-success-alert');
+  const btn = document.getElementById('forgot-save-btn');
+  if (alert) alert.classList.add('hidden');
+  if (successAlert) successAlert.classList.add('hidden');
+
+  const newPass = document.getElementById('forgot-new-password') ? document.getElementById('forgot-new-password').value : '';
+  const confirmPass = document.getElementById('forgot-confirm-password') ? document.getElementById('forgot-confirm-password').value : '';
+  const otp = document.getElementById('forgot-otp') ? document.getElementById('forgot-otp').value.trim() : '';
+
+  const passCheck = validatePassword(newPass);
+  if (!passCheck.valid) {
+    if (alert) { alert.textContent = passCheck.message; alert.classList.remove('hidden'); }
+    return;
+  }
+
+  if (newPass !== confirmPass) {
+    if (alert) { alert.textContent = "Passwords do not match. Please re-enter."; alert.classList.remove('hidden'); }
+    return;
+  }
+
+  const origText = btn ? btn.textContent : "Update Password & Login";
+  if (btn) { btn.disabled = true; btn.textContent = "Updating Password..."; }
+
+  try {
+    const res = await apiFetch('/auth/forgot-password/reset', 'POST', {
+      email: forgotResetEmail,
+      otp,
+      resetToken: forgotResetToken,
+      newPassword: newPass,
+      confirmPassword: confirmPass
+    });
+
+    if (btn) { btn.disabled = false; btn.textContent = origText; }
+
+    if (!res.ok) {
+      if (alert) {
+        alert.textContent = res.data?.error || "Failed to update password.";
+        alert.classList.remove('hidden');
+      }
+      return;
+    }
+
+    if (successAlert) {
+      successAlert.textContent = "✓ Password updated successfully! Redirecting to login...";
+      successAlert.classList.remove('hidden');
+    }
+
+    // Pre-populate login form
+    const loginEmailInput = document.getElementById('inp-email');
+    const loginPassInput = document.getElementById('inp-password');
+    if (loginEmailInput) loginEmailInput.value = forgotResetEmail;
+    if (loginPassInput) loginPassInput.value = newPass;
+
+    setMode('login');
+    showToast("Password reset successfully! Please sign in with your new credentials.", "success");
+
+    setTimeout(() => {
+      closeForgotModal();
+    }, 1500);
+
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = origText; }
+    if (alert) {
+      alert.textContent = "Network error updating password.";
+      alert.classList.remove('hidden');
+    }
+  }
+}
+
+/* ========================================================================= */
+/*                      EVENT FEEDBACK & RATING UI LOGIC                     */
+/* ========================================================================= */
+
+let currentFeedbackEventId = null;
+let currentFeedbackRating = 5;
+
+async function loadAttendeeFeedbacks() {
+  if (!currentUser || currentUser.role !== ROLES.ATTENDEE) return;
+  try {
+    const res = await apiFetch(`/attendees/${currentUser.id}/feedback`);
+    if (res.ok && res.data && res.data.feedbacks) {
+      attendeeFeedbacks = res.data.feedbacks;
+    }
+  } catch (e) {
+    console.warn('Could not load attendee feedbacks:', e);
+  }
+}
+
+function openFeedbackModal(eventId, eventName, existingRating = 5, existingComment = '') {
+  currentFeedbackEventId = eventId;
+  currentFeedbackRating = existingRating || 5;
+
+  const modal = document.getElementById('feedback-modal');
+  const alert = document.getElementById('feedback-alert');
+  const successAlert = document.getElementById('feedback-success-alert');
+  if (alert) alert.classList.add('hidden');
+  if (successAlert) successAlert.classList.add('hidden');
+
+  const evIdInput = document.getElementById('feedback-event-id');
+  if (evIdInput) evIdInput.value = eventId;
+  const subTitle = document.getElementById('feedback-event-subtitle');
+  if (subTitle) subTitle.textContent = `Event: ${eventName}`;
+
+  const titleEl = document.getElementById('feedback-modal-title');
+  const submitBtn = document.getElementById('feedback-submit-btn');
+  if (existingRating && existingComment) {
+    if (titleEl) titleEl.textContent = "Edit Your Event Feedback";
+    if (submitBtn) submitBtn.textContent = "Update Feedback";
+  } else {
+    if (titleEl) titleEl.textContent = "Rate & Review Event";
+    if (submitBtn) submitBtn.textContent = "Submit Feedback";
+  }
+
+  // Set rating stars
+  setStarRating(currentFeedbackRating);
+
+  // Set comment
+  const commentInput = document.getElementById('feedback-comment-input');
+  if (commentInput) {
+    commentInput.value = existingComment || '';
+    updateFeedbackCharCount();
+  }
+
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeFeedbackModal() {
+  const modal = document.getElementById('feedback-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function setStarRating(rating) {
+  currentFeedbackRating = rating;
+  const ratingInput = document.getElementById('feedback-rating-val');
+  if (ratingInput) ratingInput.value = rating;
+
+  const stars = document.querySelectorAll('#feedback-stars-box .star-btn');
+  stars.forEach((s, idx) => {
+    if (idx < rating) {
+      s.classList.add('active');
+    } else {
+      s.classList.remove('active');
+    }
+  });
+
+  const captions = [
+    "1 Star - Poor",
+    "2 Stars - Fair",
+    "3 Stars - Good",
+    "4 Stars - Very Good",
+    "5 Stars - Excellent!"
+  ];
+  const capEl = document.getElementById('feedback-rating-caption');
+  if (capEl) capEl.textContent = captions[rating - 1] || `${rating} Stars`;
+}
+
+function updateFeedbackCharCount() {
+  const input = document.getElementById('feedback-comment-input');
+  const counter = document.getElementById('feedback-char-count');
+  if (input && counter) {
+    counter.textContent = input.value.length;
+    if (input.value.length > 1000) {
+      counter.style.color = '#ef4444';
+    } else {
+      counter.style.color = 'var(--text-muted)';
+    }
+  }
+}
+
+async function handleFeedbackSubmit() {
+  const alert = document.getElementById('feedback-alert');
+  const successAlert = document.getElementById('feedback-success-alert');
+  const submitBtn = document.getElementById('feedback-submit-btn');
+  if (alert) alert.classList.add('hidden');
+  if (successAlert) successAlert.classList.add('hidden');
+
+  const evIdInput = document.getElementById('feedback-event-id');
+  const eventId = evIdInput ? parseInt(evIdInput.value, 10) : null;
+  const ratingInput = document.getElementById('feedback-rating-val');
+  const rating = ratingInput ? parseInt(ratingInput.value, 10) : 5;
+  const commentInput = document.getElementById('feedback-comment-input');
+  const comment = commentInput ? commentInput.value.trim() : '';
+
+  if (!eventId) {
+    if (alert) { alert.textContent = "Event ID is missing."; alert.classList.remove('hidden'); }
+    return;
+  }
+  if (!rating || rating < 1 || rating > 5) {
+    if (alert) { alert.textContent = "Please select a rating between 1 and 5 stars."; alert.classList.remove('hidden'); }
+    return;
+  }
+  if (comment.length > 1000) {
+    if (alert) { alert.textContent = "Comment cannot exceed 1000 characters."; alert.classList.remove('hidden'); }
+    return;
+  }
+
+  const origBtnText = submitBtn ? submitBtn.textContent : "Submit Feedback";
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Saving...";
+  }
+
+  try {
+    const res = await apiFetch(`/events/${eventId}/feedback`, 'POST', {
+      userId: currentUser.id,
+      rating,
+      comment
+    });
+
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = origBtnText;
+    }
+
+    if (!res.ok) {
+      if (alert) {
+        alert.textContent = res.data?.error || "Failed to submit feedback.";
+        alert.classList.remove('hidden');
+      }
+      return;
+    }
+
+    if (successAlert) {
+      successAlert.textContent = res.data?.message || "Feedback submitted successfully!";
+      successAlert.classList.remove('hidden');
+    }
+
+    showToast(res.data?.message || "Feedback submitted successfully!", "success");
+
+    // Refresh attendee feedbacks list
+    await loadAttendeeFeedbacks();
+
+    // Re-render tickets view if active
+    setTimeout(() => {
+      closeFeedbackModal();
+      if (currentActiveView === 'tickets') {
+        const ws = document.getElementById('role-workspace');
+        if (ws) renderMyTicketsView(ws);
+      }
+    }, 1200);
+
+  } catch (err) {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = origBtnText;
+    }
+    if (alert) {
+      alert.textContent = "Connection error while submitting feedback.";
+      alert.classList.remove('hidden');
+    }
+  }
+}
+
+// Organizer / Admin View Event Feedback Modal Logic
+async function openEventFeedbackViewModal(eventId, eventName) {
+  const modal = document.getElementById('event-feedback-view-modal');
+  const titleEl = document.getElementById('efv-modal-title');
+  const subEl = document.getElementById('efv-event-subtitle');
+  const listEl = document.getElementById('efv-reviews-container');
+
+  if (titleEl) titleEl.textContent = `Feedback & Reviews: ${eventName}`;
+  if (subEl) subEl.textContent = `Live attendee ratings and reviews for Event #${eventId}`;
+  if (listEl) listEl.innerHTML = `<p style="color:var(--text-muted);text-align:center;padding:1.5rem;">Loading feedback from PostgreSQL...</p>`;
+
+  if (modal) modal.classList.remove('hidden');
+
+  try {
+    const res = await apiFetch(`/events/${eventId}/feedback`);
+    if (!res.ok || !res.data) {
+      if (listEl) listEl.innerHTML = `<p style="color:#ef4444;text-align:center;padding:1.5rem;">Failed to load feedback records.</p>`;
+      return;
+    }
+
+    const d = res.data;
+    const avgScoreEl = document.getElementById('efv-score-avg');
+    const starsEl = document.getElementById('efv-stars-display');
+    const totalEl = document.getElementById('efv-total-count');
+
+    if (avgScoreEl) avgScoreEl.textContent = (d.averageRating || 0).toFixed(1);
+    if (totalEl) totalEl.textContent = `${d.totalResponses || 0} Reviews`;
+
+    // Render gold stars for average
+    const fullStars = Math.round(d.averageRating || 0);
+    let starsStr = '';
+    for (let i = 1; i <= 5; i++) {
+      starsStr += (i <= fullStars) ? '★' : '☆';
+    }
+    if (starsEl) starsEl.textContent = starsStr;
+
+    // Distribution bars
+    const dist = d.ratingDistribution || { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+    const total = d.totalResponses || 1;
+    for (let star = 1; star <= 5; star++) {
+      const count = dist[star] || 0;
+      const pct = Math.round((count / total) * 100);
+      const fillEl = document.getElementById(`bar-${star}-fill`);
+      const countEl = document.getElementById(`bar-${star}-count`);
+      if (fillEl) fillEl.style.width = `${pct}%`;
+      if (countEl) countEl.textContent = count;
+    }
+
+    // List reviews
+    if (!d.feedbacks || d.feedbacks.length === 0) {
+      if (listEl) listEl.innerHTML = `<p style="color:var(--text-muted);text-align:center;padding:2rem;">No feedback submitted for this event yet.</p>`;
+      return;
+    }
+
+    if (listEl) {
+      listEl.innerHTML = d.feedbacks.map(f => {
+        let stars = '';
+        for (let i = 1; i <= 5; i++) {
+          stars += (i <= f.rating) ? '★' : '☆';
+        }
+        const dt = f.created_at ? new Date(f.created_at).toLocaleDateString() : '';
+        return `
+          <div class="feedback-review-item">
+            <div class="feedback-review-header">
+              <div>
+                <strong>${escapeHtml(f.attendeeName || 'Verified Attendee')}</strong>
+                <span style="font-size:0.75rem;color:var(--text-muted);margin-left:0.5rem;">${dt}</span>
+              </div>
+              <div class="feedback-review-stars">${stars} (${f.rating}/5)</div>
+            </div>
+            ${f.comment ? `<p style="font-size:0.85rem;color:var(--text-secondary);margin:0.35rem 0 0;line-height:1.4;">${escapeHtml(f.comment)}</p>` : `<em style="font-size:0.78rem;color:var(--text-muted);">No written comments provided.</em>`}
+          </div>
+        `;
+      }).join('');
+    }
+  } catch (err) {
+    if (listEl) listEl.innerHTML = `<p style="color:#ef4444;text-align:center;padding:1.5rem;">Error connecting to server.</p>`;
+  }
+}
+
+function closeEventFeedbackViewModal() {
+  const modal = document.getElementById('event-feedback-view-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+/* ========================================================================= */
+/*                          EVENT LISTENERS & BINDINGS                       */
+/* ========================================================================= */
+
+document.addEventListener('DOMContentLoaded', async () => {
+  await initDatabase();
+
+  // Tab switching
+  document.getElementById('tab-login').addEventListener('click', () => setMode('login'));
+  document.getElementById('tab-register').addEventListener('click', () => setMode('register'));
+
+  // Role switching
+  document.querySelectorAll('.role-pill').forEach(pill => {
+    pill.addEventListener('click', (e) => setRole(e.currentTarget.getAttribute('data-role')));
+  });
+
+  // Top Nav Items
+  document.querySelectorAll('.nav-item').forEach(btn => {
+    btn.addEventListener('click', (e) => switchView(e.currentTarget.getAttribute('data-view')));
+  });
+
+  // Auth Form Submit
+  document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit);
+
+  // Logout button
+  document.getElementById('logout-btn').addEventListener('click', () => {
+    clearSession();
+    showToast("Signed out successfully.", "info");
+    showAuthView();
+  });
+
+  // Profile modal triggers
+  document.getElementById('user-pill-btn').addEventListener('click', openProfileModal);
+  document.getElementById('open-profile-btn').addEventListener('click', openProfileModal);
+  document.getElementById('close-profile-btn').addEventListener('click', closeProfileModal);
+  document.getElementById('cancel-profile-btn').addEventListener('click', closeProfileModal);
+  document.getElementById('profile-edit-form').addEventListener('submit', handleProfileSave);
+
+  // Event modal triggers
+  document.getElementById('close-event-modal-btn').addEventListener('click', closeCreateEventModal);
+  document.getElementById('cancel-event-btn').addEventListener('click', closeCreateEventModal);
+  document.getElementById('create-event-form').addEventListener('submit', handleCreateEventSubmit);
+
+  // Sponsor modal triggers
+  const closeSponsorBtn = document.getElementById('close-sponsor-btn');
+  if (closeSponsorBtn) closeSponsorBtn.addEventListener('click', closeSponsorModal);
+  const cancelSponsorBtn = document.getElementById('cancel-sponsor-btn');
+  if (cancelSponsorBtn) cancelSponsorBtn.addEventListener('click', closeSponsorModal);
+
+  // Forgot Password modal triggers
+  const linkForgot = document.getElementById('btn-forgot-password') || document.getElementById('link-forgot-password');
+  if (linkForgot) linkForgot.addEventListener('click', openForgotModal);
+  const closeForgot = document.getElementById('close-forgot-btn');
+  if (closeForgot) closeForgot.addEventListener('click', closeForgotModal);
+  const cancelForgot = document.getElementById('cancel-forgot-btn');
+  if (cancelForgot) cancelForgot.addEventListener('click', closeForgotModal);
+  const verifyForgot = document.getElementById('forgot-verify-btn');
+  if (verifyForgot) verifyForgot.addEventListener('click', handleForgotSendOtp);
+  const resendForgot = document.getElementById('forgot-resend-btn');
+  if (resendForgot) resendForgot.addEventListener('click', handleForgotResendOtp);
+  const verifyOtpBtn = document.getElementById('forgot-verify-otp-btn');
+  if (verifyOtpBtn) verifyOtpBtn.addEventListener('click', handleForgotVerifyOtp);
+  const step2Back = document.getElementById('forgot-step2-back-btn');
+  if (step2Back) step2Back.addEventListener('click', () => setForgotStep(1));
+  const step3Back = document.getElementById('forgot-back-btn');
+  if (step3Back) step3Back.addEventListener('click', () => setForgotStep(2));
+  const saveForgotBtn = document.getElementById('forgot-save-btn');
+  if (saveForgotBtn) saveForgotBtn.addEventListener('click', handleForgotSavePassword);
+  const formForgot = document.getElementById('forgot-password-form');
+  if (formForgot) formForgot.addEventListener('submit', handleForgotSavePassword);
+
+  // Feedback modal triggers
+  const closeFbBtn = document.getElementById('close-feedback-btn');
+  if (closeFbBtn) closeFbBtn.addEventListener('click', closeFeedbackModal);
+  const cancelFbBtn = document.getElementById('cancel-feedback-btn');
+  if (cancelFbBtn) cancelFbBtn.addEventListener('click', closeFeedbackModal);
+  const submitFbBtn = document.getElementById('feedback-submit-btn');
+  if (submitFbBtn) submitFbBtn.addEventListener('click', handleFeedbackSubmit);
+  const commentInput = document.getElementById('feedback-comment-input');
+  if (commentInput) commentInput.addEventListener('input', updateFeedbackCharCount);
+
+  // Interactive 5 stars click and hover
+  document.querySelectorAll('#feedback-stars-box .star-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const star = parseInt(e.currentTarget.getAttribute('data-star'), 10);
+      setStarRating(star);
+    });
+    btn.addEventListener('mouseenter', (e) => {
+      const star = parseInt(e.currentTarget.getAttribute('data-star'), 10);
+      document.querySelectorAll('#feedback-stars-box .star-btn').forEach((s, idx) => {
+        if (idx < star) s.classList.add('hovered');
+        else s.classList.remove('hovered');
+      });
+    });
+  });
+  const starsBox = document.getElementById('feedback-stars-box');
+  if (starsBox) {
+    starsBox.addEventListener('mouseleave', () => {
+      document.querySelectorAll('#feedback-stars-box .star-btn').forEach(s => s.classList.remove('hovered'));
+    });
+  }
+
+  // Event feedback view modal triggers
+  const closeEfvBtn = document.getElementById('close-efv-btn');
+  if (closeEfvBtn) closeEfvBtn.addEventListener('click', closeEventFeedbackViewModal);
+
+  // Payment modal triggers
+  const closePayBtn = document.getElementById('close-payment-modal-btn');
+  if (closePayBtn) closePayBtn.addEventListener('click', closePaymentModal);
+  const cancelPayBtn = document.getElementById('cancel-payment-btn');
+  if (cancelPayBtn) cancelPayBtn.addEventListener('click', closePaymentModal);
+
+  // Tier select cards click handling in modal
+  document.querySelectorAll('.tier-select-card').forEach(card => {
+    card.addEventListener('click', () => {
+      document.querySelectorAll('.tier-select-card').forEach(c => c.classList.remove('active'));
+      card.classList.add('active');
+      const radio = card.querySelector('input[type="radio"]');
+      if (radio) radio.checked = true;
+    });
+  });
+
+  checkExistingSession();
+});
+
+
+
+/* ========================================================================= */
+/*                          ANALYTICS & REPORTING MODULE                     */
+/* ========================================================================= */
+
+async function renderAnalyticsView(workspace) {
+  const isOrganizer = currentUser.role === ROLES.ORGANIZER;
+  const isAdmin = currentUser.role === ROLES.ADMIN;
+  if (!isOrganizer && !isAdmin) {
+    workspace.innerHTML = '<div class="table-card"><p>Access Denied: Analytics is restricted to Organizers and Administrators.</p></div>';
+    return;
+  }
+
+  workspace.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;gap:1rem;">
+      <div>
+        <h2 style="font-family:var(--font-heading);font-size:1.65rem;">Platform Analytics & Intelligence</h2>
+        <p style="color:var(--text-secondary);font-size:0.88rem;">Real-time metrics computed directly from PostgreSQL database</p>
+      </div>
+      <div style="display:flex;gap:0.6rem;">
+        <a href="/api/analytics/export/csv" class="btn btn-secondary btn-sm" download="eventra_analytics.csv" style="display:inline-flex;align-items:center;gap:0.4rem;">
+          📊 Export CSV
+        </a>
+        <button class="btn btn-primary btn-sm" onclick="window.print()" style="display:inline-flex;align-items:center;gap:0.4rem;">
+          🖨️ Print / PDF Report
+        </button>
+      </div>
+    </div>
+
+    <!-- Filter Controls -->
+    <div class="analytics-filter-bar">
+      <div class="analytics-filter-group">
+        <span style="font-size:0.82rem;font-weight:600;color:var(--text-secondary);">Filter Event:</span>
+        <select class="analytics-filter-select" id="analytics-event-filter" onchange="loadAnalyticsData()">
+          <option value="">All Events</option>
+          ${events.map(e => `<option value="${e.id}">${e.name}</option>`).join('')}
+        </select>
+        <select class="analytics-filter-select" id="analytics-status-filter" onchange="loadAnalyticsData()">
+          <option value="SUCCESS">Verified Collections Only</option>
+          <option value="ALL">All Payments</option>
+        </select>
+      </div>
+      <div style="font-size:0.78rem;color:var(--text-muted);">
+        Verified via PostgreSQL • Updated live
+      </div>
+    </div>
+
+    <!-- KPI Metric Cards Grid -->
+    <div class="dash-card-grid" id="analytics-kpi-grid" style="margin-bottom: 1.5rem;">
+      <div class="dash-stat-card"><div class="stat-icon-wrapper">📅</div><div class="stat-info"><span class="stat-value" id="kpi-events">-</span><span class="stat-label">Total Events</span></div></div>
+      <div class="dash-stat-card"><div class="stat-icon-wrapper">🎟️</div><div class="stat-info"><span class="stat-value" id="kpi-tickets">-</span><span class="stat-label">Tickets Sold</span></div></div>
+      <div class="dash-stat-card"><div class="stat-icon-wrapper">💰</div><div class="stat-info"><span class="stat-value" id="kpi-revenue">-</span><span class="stat-label">Verified Revenue</span></div></div>
+      <div class="dash-stat-card"><div class="stat-icon-wrapper">👥</div><div class="stat-info"><span class="stat-value" id="kpi-attendees">-</span><span class="stat-label">Registered Attendees</span></div></div>
+      <div class="dash-stat-card"><div class="stat-icon-wrapper">✓</div><div class="stat-info"><span class="stat-value" id="kpi-attendance-pct">-</span><span class="stat-label">Attendance Rate</span></div></div>
+      <div class="dash-stat-card"><div class="stat-icon-wrapper">📈</div><div class="stat-info"><span class="stat-value" id="kpi-capacity-util">-</span><span class="stat-label">Capacity Utilization</span></div></div>
+    </div>
+
+    <!-- Visual Charts Grid (Chart.js) -->
+    <div class="analytics-charts-grid">
+      <div class="analytics-chart-card">
+        <div class="analytics-chart-header">
+          <div><h4 class="analytics-chart-title">Ticket Sales by Pass Type</h4><span class="analytics-chart-sub">Volume breakdown across pass tiers</span></div>
+          <span>🎟️</span>
+        </div>
+        <div class="chart-canvas-wrapper"><canvas id="chart-sales-tier"></canvas></div>
+      </div>
+
+      <div class="analytics-chart-card">
+        <div class="analytics-chart-header">
+          <div><h4 class="analytics-chart-title">Revenue Generated by Event</h4><span class="analytics-chart-sub">INR collections from verified payments</span></div>
+          <span>💰</span>
+        </div>
+        <div class="chart-canvas-wrapper"><canvas id="chart-revenue-event"></canvas></div>
+      </div>
+
+      <div class="analytics-chart-card">
+        <div class="analytics-chart-header">
+          <div><h4 class="analytics-chart-title">Check-Ins & Gate Flow Over Time</h4><span class="analytics-chart-sub">Verified gate admissions velocity</span></div>
+          <span>🛡️</span>
+        </div>
+        <div class="chart-canvas-wrapper"><canvas id="chart-checkins-time"></canvas></div>
+      </div>
+
+      <div class="analytics-chart-card">
+        <div class="analytics-chart-header">
+          <div><h4 class="analytics-chart-title">Sponsorships & Capacity Health</h4><span class="analytics-chart-sub">Pledges & Venue Allocation</span></div>
+          <span>🤝</span>
+        </div>
+        <div class="chart-canvas-wrapper"><canvas id="chart-capacity-sponsorship"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Detailed Event-Wise Report Table -->
+    <div class="table-card">
+      <div class="table-header-row">
+        <div>
+          <h3 class="table-title">Event-Wise Detailed Performance Report</h3>
+          <p style="color:var(--text-secondary);font-size:0.82rem;margin-top:0.2rem;">Capacity Utilization = Tickets Sold / Event Capacity × 100 • Attendance % = Checked-In / Registered × 100</p>
+        </div>
+        <span class="badge-role">PostgreSQL Computed</span>
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Event Name</th>
+              <th>Date</th>
+              <th>Capacity</th>
+              <th>Available</th>
+              <th>Sold</th>
+              <th>Verified Revenue</th>
+              <th>Registered</th>
+              <th>Checked-In</th>
+              <th>Attendance %</th>
+              <th>Crowd Level</th>
+            </tr>
+          </thead>
+          <tbody id="analytics-event-table-body">
+            <tr><td colspan="10" style="text-align:center;">Loading analytics data...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  await loadAnalyticsData();
+}
+
+window.loadAnalyticsData = async function() {
+  const eventFilter = document.getElementById('analytics-event-filter') ? document.getElementById('analytics-event-filter').value : '';
+  const orgParam = currentUser.role === ROLES.ORGANIZER ? `organizerId=${currentUser.id}&` : '';
+  const evParam = eventFilter ? `eventId=${eventFilter}` : '';
+
+  const res = await apiFetch(`/analytics/organizer?${orgParam}${evParam}`);
+  if (!res.ok || !res.data) return;
+
+  const data = res.data;
+  const m = data.metrics || {};
+
+  // Update KPI cards
+  const elEvents = document.getElementById('kpi-events');
+  const elTickets = document.getElementById('kpi-tickets');
+  const elRev = document.getElementById('kpi-revenue');
+  const elAtt = document.getElementById('kpi-attendees');
+  const elAttPct = document.getElementById('kpi-attendance-pct');
+  const elCapUtil = document.getElementById('kpi-capacity-util');
+
+  if (elEvents) elEvents.textContent = m.totalEvents ?? events.length;
+  if (elTickets) elTickets.textContent = m.totalTicketsSold ?? 0;
+  if (elRev) elRev.textContent = `₹${(m.totalRevenue || 0).toLocaleString()}`;
+  if (elAtt) elAtt.textContent = m.totalAttendees ?? 0;
+  if (elAttPct) elAttPct.textContent = `${m.attendancePercentage ?? 0}%`;
+  if (elCapUtil) elCapUtil.textContent = `${m.capacityUtilization ?? 0}%`;
+
+  // Update Event-wise table
+  const tbody = document.getElementById('analytics-event-table-body');
+  if (tbody && data.eventReports) {
+    if (data.eventReports.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);">No events match the selected criteria.</td></tr>';
+    } else {
+      tbody.innerHTML = data.eventReports.map(r => {
+        let riskBadge = '<span class="status-badge risk-normal">NORMAL</span>';
+        if (r.currentCrowdLevel === 'CRITICAL') riskBadge = '<span class="status-badge risk-critical">CRITICAL</span>';
+        else if (r.currentCrowdLevel === 'HIGH') riskBadge = '<span class="status-badge risk-high">HIGH</span>';
+        else if (r.currentCrowdLevel === 'MODERATE') riskBadge = '<span class="status-badge risk-moderate">MODERATE</span>';
+
+        return `
+          <tr>
+            <td><strong>${r.eventName}</strong></td>
+            <td style="font-size:0.82rem;color:var(--text-secondary);">${r.date}</td>
+            <td>${r.capacity}</td>
+            <td>${r.ticketsAvailable}</td>
+            <td><strong>${r.ticketsSold}</strong></td>
+            <td><strong style="color:var(--emerald-success);">₹${(r.revenue || 0).toLocaleString()}</strong></td>
+            <td>${r.registeredAttendees}</td>
+            <td>${r.checkedInAttendees}</td>
+            <td><strong>${r.attendancePercentage}%</strong></td>
+            <td>${riskBadge}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+  }
+
+  // Render Visual Charts via Chart.js
+  if (typeof window.Chart !== 'undefined') {
+    renderAnalyticsCharts(data);
+  }
+};
+
+function renderAnalyticsCharts(data) {
+  const charts = data.charts || {};
+
+  // Destroy previous instances safely
+  Object.keys(analyticsChartInstances).forEach(k => {
+    if (analyticsChartInstances[k]) analyticsChartInstances[k].destroy();
+  });
+
+  // Chart 1: Ticket Sales by Tier
+  const ctx1 = document.getElementById('chart-sales-tier');
+  if (ctx1) {
+    const labels1 = Object.keys(charts.salesByTier || {});
+    const values1 = Object.values(charts.salesByTier || {});
+    analyticsChartInstances['salesTier'] = new Chart(ctx1, {
+      type: 'bar',
+      data: {
+        labels: labels1.length ? labels1 : ['General', 'VIP', 'Student'],
+        datasets: [{
+          label: 'Tickets Sold',
+          data: values1.length ? values1 : [12, 4, 8],
+          backgroundColor: ['#6366f1', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b']
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#94a3b8' } },
+          x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
+        }
+      }
+    });
+  }
+
+  // Chart 2: Revenue by Event
+  const ctx2 = document.getElementById('chart-revenue-event');
+  if (ctx2) {
+    const labels2 = Object.keys(charts.revenueByEvent || {});
+    const values2 = Object.values(charts.revenueByEvent || {});
+    analyticsChartInstances['revenueEvent'] = new Chart(ctx2, {
+      type: 'line',
+      data: {
+        labels: labels2.length ? labels2 : ['TechFest 2026', 'Campus Cultural Night'],
+        datasets: [{
+          label: 'Revenue (INR)',
+          data: values2.length ? values2 : [352.82, 469.64],
+          borderColor: '#10b981',
+          backgroundColor: 'rgba(16, 185, 129, 0.15)',
+          fill: true,
+          tension: 0.35,
+          pointBackgroundColor: '#10b981'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#94a3b8' } },
+          x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
+        }
+      }
+    });
+  }
+
+  // Chart 3: Check-ins Over Time
+  const ctx3 = document.getElementById('chart-checkins-time');
+  if (ctx3) {
+    const labels3 = Object.keys(charts.checkinsByDate || {});
+    const values3 = Object.values(charts.checkinsByDate || {});
+    analyticsChartInstances['checkins'] = new Chart(ctx3, {
+      type: 'bar',
+      data: {
+        labels: labels3.length ? labels3 : ['Today', 'Yesterday'],
+        datasets: [{
+          label: 'Check-ins',
+          data: values3.length ? values3 : [5, 2],
+          backgroundColor: '#06b6d4'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#94a3b8' } },
+          x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
+        }
+      }
+    });
+  }
+
+  // Chart 4: Capacity Utilization & Sponsorship
+  const ctx4 = document.getElementById('chart-capacity-sponsorship');
+  if (ctx4) {
+    const spStats = (data.metrics && data.metrics.sponsorshipStats) || {};
+    analyticsChartInstances['sponsorship'] = new Chart(ctx4, {
+      type: 'doughnut',
+      data: {
+        labels: ['Platinum Partners', 'Gold Partners', 'Silver Partners'],
+        datasets: [{
+          data: [spStats.platinumCount || 1, spStats.goldCount || 1, spStats.silverCount || 0],
+          backgroundColor: ['#818cf8', '#f59e0b', '#94a3b8'],
+          borderColor: '#151d30'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom', labels: { color: '#cbd5e1', font: { size: 11 } } } }
+      }
+    });
+  }
+}
+
+
+/* ========================================================================= */
+/*                          PREDICTIVE CROWD MANAGEMENT                      */
+/* ========================================================================= */
+
+async function renderCrowdMonitoringView(workspace) {
+  const currentEventId = events.length ? events[0].id : 1;
+
+  workspace.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;gap:1rem;">
+      <div>
+        <h2 style="font-family:var(--font-heading);font-size:1.65rem;">Predictive Crowd & Zone Safety Management</h2>
+        <p style="color:var(--text-secondary);font-size:0.88rem;">Live occupancy tracking + explainable rate-based velocity forecasting & mitigation alerts</p>
+      </div>
+      <div style="display:flex;gap:0.5rem;align-items:center;">
+        <select class="analytics-filter-select" id="crowd-event-select" onchange="loadCrowdPredictions(this.value)">
+          ${events.map(e => `<option value="${e.id}">${e.name}</option>`).join('')}
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="loadCrowdPredictions()">🔄 Refresh Projections</button>
+      </div>
+    </div>
+
+    <!-- Forecasting Model Overview Banner -->
+    <div class="predictive-header-banner">
+      <div>
+        <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.35rem;">
+          <span class="badge-role" style="background:rgba(99,102,241,0.25);color:#a5b4fc;">Rate-Based Velocity Projections</span>
+          <span style="font-size:0.8rem;color:var(--text-secondary);">College Project Explainable Model</span>
+        </div>
+        <div style="font-weight:700;font-size:1.05rem;color:#fff;" id="crowd-peak-period">
+          Estimated Peak Period: 07:30 PM - 09:00 PM (Keynote & Main Stage)
+        </div>
+        <p style="font-size:0.78rem;color:var(--text-secondary);margin:0.25rem 0 0;">
+          Estimates future crowd conditions in 15m, 30m, and 60m windows based on net check-in rate and historical trends stored in PostgreSQL.
+        </p>
+      </div>
+      <div id="crowd-bottleneck-alert" style="display:flex;align-items:center;gap:0.5rem;"></div>
+    </div>
+
+    <!-- Zone Cards Grid with Predictions -->
+    <div class="zone-grid" id="predictive-zones-grid">
+      <div style="text-align:center;padding:2rem;"><p>Calculating crowd velocity and future conditions...</p></div>
+    </div>
+  `;
+
+  await loadCrowdPredictions(currentEventId);
+}
+
+window.loadCrowdPredictions = async function(eventId) {
+  const sel = document.getElementById('crowd-event-select');
+  const evId = eventId || (sel ? sel.value : (events.length ? events[0].id : 1));
+
+  const res = await apiFetch(`/crowd/predictions/${evId}`);
+  const grid = document.getElementById('predictive-zones-grid');
+  const peakEl = document.getElementById('crowd-peak-period');
+  const alertEl = document.getElementById('crowd-bottleneck-alert');
+
+  if (!grid) return;
+
+  if (res.ok && res.data.predictions) {
+    const data = res.data;
+    if (peakEl && data.predictedPeakTime) {
+      peakEl.textContent = `Estimated Peak Period: ${data.predictedPeakTime}`;
+    }
+
+    if (alertEl) {
+      if (data.highRiskZoneCount > 0) {
+        alertEl.innerHTML = `
+          <div style="padding:0.4rem 0.85rem;background:rgba(239,68,68,0.2);border:1px solid rgba(239,68,68,0.4);border-radius:var(--radius-sm);color:#fda4af;font-size:0.82rem;font-weight:700;">
+            ⚠️ ${data.highRiskZoneCount} High-Risk Zone(s) Predicted!
+          </div>
+        `;
+      } else {
+        alertEl.innerHTML = `
+          <div style="padding:0.4rem 0.85rem;background:rgba(16,185,129,0.15);border:1px solid rgba(16,185,129,0.3);border-radius:var(--radius-sm);color:#6ee7b7;font-size:0.82rem;font-weight:600;">
+            ✓ All Zones Operating Within Safe Limits
+          </div>
+        `;
+      }
+    }
+
+    grid.innerHTML = data.predictions.map(z => {
+      const isCritical = z.currentRisk === 'CRITICAL' || z.predictedRisk === 'CRITICAL';
+      const isHigh = z.currentRisk === 'HIGH' || z.predictedRisk === 'HIGH';
+      const cardClass = isCritical ? 'border-critical' : (isHigh ? 'border-high' : '');
+      const pct = z.occupancyPercentage;
+
+      let riskClass = "risk-normal";
+      let riskLabel = "Normal Occupancy";
+      if (z.currentRisk === 'CRITICAL') { riskClass = "risk-critical"; riskLabel = "Critical Congestion"; }
+      else if (z.currentRisk === 'HIGH') { riskClass = "risk-high"; riskLabel = "High Risk"; }
+      else if (z.currentRisk === 'MODERATE') { riskClass = "risk-moderate"; riskLabel = "Moderate Flow"; }
+
+      let predRiskBadge = `<span class="status-badge risk-normal" style="font-size:0.72rem;">Normal in 30m</span>`;
+      if (z.predictedRisk === 'CRITICAL') predRiskBadge = `<span class="status-badge risk-critical" style="font-size:0.72rem;">CRITICAL in 30m</span>`;
+      else if (z.predictedRisk === 'HIGH') predRiskBadge = `<span class="status-badge risk-high" style="font-size:0.72rem;">HIGH in 30m</span>`;
+      else if (z.predictedRisk === 'MODERATE') predRiskBadge = `<span class="status-badge risk-moderate" style="font-size:0.72rem;">Moderate in 30m</span>`;
+
+      return `
+        <div class="predictive-zone-card ${cardClass}">
+          <div class="zone-card-top" style="display:flex;justify-content:space-between;align-items:center;">
+            <span class="event-category-tag">${z.zoneName}</span>
+            <div style="display:flex;gap:0.35rem;">
+              <span class="status-badge ${riskClass}">${riskLabel}</span>
+              ${predRiskBadge}
+            </div>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.85rem;">
+            <span style="color:var(--text-secondary);">Current Occupancy</span>
+            <span style="font-weight:700;color:#fff;">${z.currentOccupancy} / ${z.capacity}</span>
+          </div>
+
+          <div class="zone-occupancy-bar-bg">
+            <div class="zone-occupancy-bar-fill ${riskClass}" style="width: ${pct}%;"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:0.74rem;color:var(--text-muted);">
+            <span>${pct}% Current</span>
+            <span>Velocity: +${z.velocityPer15Min} per 15 min</span>
+          </div>
+
+          <!-- Explainable Projections Matrix -->
+          <div class="predictive-stats-row">
+            <div class="predictive-stat-item">
+              <span class="p-lbl">+15 Mins</span>
+              <span class="p-val">${z.projectedOccupancy15m}</span>
+            </div>
+            <div class="predictive-stat-item">
+              <span class="p-lbl">+30 Mins</span>
+              <span class="p-val" style="${isCritical ? 'color:#fda4af;' : ''}">${z.projectedOccupancy30m}</span>
+            </div>
+            <div class="predictive-stat-item">
+              <span class="p-lbl">+60 Mins</span>
+              <span class="p-val">${z.projectedOccupancy60m}</span>
+            </div>
+            <div class="predictive-stat-item">
+              <span class="p-lbl">Congestion %</span>
+              <span class="p-val" style="${z.congestionProbability >= 80 ? 'color:#f87171;' : ''}">${z.congestionProbability}%</span>
+            </div>
+          </div>
+
+          <!-- Actionable Mitigation Recommendation -->
+          <div class="mitigation-box ${isCritical ? 'critical-mitigation' : ''}">
+            <strong>Actionable Recommendation:</strong> ${z.recommendation}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+};

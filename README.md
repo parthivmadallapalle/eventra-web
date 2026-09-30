@@ -1,0 +1,124 @@
+# EVENTRA - Unified Event Management Platform
+
+> Intelligent Event Management, Sponsorship & Crowd Safety Platform  
+> Based on SRS v1.0 & SADD v1.0 • Team 23, IIIT Kottayam
+
+All components and files of **EVENTRA** have been combined into this unified `eventra-web` package.
+
+---
+
+## 📁 Consolidated Project Files
+
+| File | Type | Description |
+| :--- | :--- | :--- |
+| [`index.html`](file:///p:/coding.c/c%20programes/eventra-web/index.html) | **Standalone Web App** | Complete unified single-file web application with inlined styling & logic. Runs out-of-the-box in any browser. |
+| [`eventra.c`](file:///p:/coding.c/c%20programes/eventra-web/eventra.c) | **C Source Code** | Pure ANSI C implementation of Module 1: Authentication, RBAC (5 Roles), Salted SHA-256 Hashing, and Binary File I/O. |
+| [`eventra.exe`](file:///p:/coding.c/c%20programes/eventra-web/eventra.exe) | **Win64 Binary** | Precompiled executable ready to run in Windows Terminal / CMD. |
+| [`users.dat`](file:///p:/coding.c/c%20programes/eventra-web/users.dat) | **Binary Database** | High-performance binary file storing fixed-width `User` structs. |
+| [`styles.css`](file:///p:/coding.c/c%20programes/eventra-web/styles.css) | **Modular CSS** | Dark-mode glassmorphic design system with HSL colors and glowing spheres. |
+| [`app.js`](file:///p:/coding.c/c%20programes/eventra-web/app.js) | **Modular JavaScript** | Client engine with QR matrix canvas generator, gate scanner, and live crowd monitoring. |
+| [`launch.bat`](file:///p:/coding.c/c%20programes/eventra-web/launch.bat) | **Windows Runner** | One-click batch runner to launch the web app or C console. |
+| `c-core/` | **Subdirectory** | Backup archive containing `eventra.c`, `eventra.exe`, and `users.dat`. |
+
+---
+
+## 🚀 How to Run
+
+### Option 1: One-Click Launcher
+Double-click [`launch.bat`](file:///p:/coding.c/c%20programes/eventra-web/launch.bat) to open the interactive menu:
+1. Start Web Platform on `http://localhost:3000/`
+2. Open standalone `index.html` directly in your browser
+3. Run the C CLI Application (`eventra.exe`)
+4. Recompile `eventra.c` with GCC
+
+### Option 2: Web Platform in Browser
+- **Local Server**: Run `python -m http.server 3000` inside `eventra-web` and open [http://localhost:3000/](http://localhost:3000/)
+- **Direct Double-Click**: Double-click [`index.html`](file:///p:/coding.c/c%20programes/eventra-web/index.html) directly. It is 100% self-contained!
+
+### Option 3: C Terminal Console
+Open Windows PowerShell or Command Prompt in `eventra-web`:
+```powershell
+.\eventra.exe
+```
+Or recompile with MinGW GCC:
+```powershell
+gcc -Wall -O2 eventra.c -o eventra.exe
+```
+
+---
+
+## 🔑 Demo Login Credentials
+
+| Role | Email | Password |
+| :--- | :--- | :--- |
+| **Administrator** | `admin@eventra.com` | `admin123` |
+| **Event Organizer** | `organizer@fest.org` | `pass123` |
+| **Attendee** | `attendee@fest.org` | `pass123` |
+| **Corporate Sponsor** | `sponsor@novatech.com` | `pass123` |
+| **Gate Security Staff** | `staff@gate1.com` | `pass123` |
+
+*Master Admin Authorization Key for Admin Registration:* `EVENTRA_ADMIN_2026`
+
+---
+
+## 💳 Razorpay Test Mode Payment Integration
+
+EVENTRA features an official Razorpay-backed payment gateway flow supporting **UPI, Cards, Net Banking, and Wallets** via **Razorpay Checkout** in **Test Mode**.
+
+### 🔄 End-to-End Payment & Ticketing Flow
+
+```
+1. Attendee selects Paid Ticket Tier (e.g. ₹199 + 18% GST = ₹234.82)
+   ↓
+2. Attendee selects "UPI / QR" Payment Method
+   ↓
+3. Frontend requests Backend: POST /api/payments/create-order
+   ↓
+4. Backend registers official Razorpay Order via api.razorpay.com & logs pending row in PostgreSQL
+   ↓
+5. Frontend opens official Razorpay Checkout pre-configured for UPI payment
+   ↓
+6. Attendee selects available payment option or UPI within official Razorpay Checkout
+   ↓
+7. Razorpay Checkout invokes frontend handler with order_id, payment_id, signature
+   ↓
+8. Backend verifies HMAC-SHA256 signature server-side: POST /api/payments/verify-signature
+   ↓
+9. PostgreSQL Payment record transitions from 'CREATED' to 'SUCCESS'
+   ↓
+10. Confirmed Ticket is generated with unique token: EVENTRA-QR-XXXX-XXXX
+   ↓
+11. Attendee receives Ticket in Attendee Portal with EVENTRA Gate QR Pass
+   ↓
+12. Gate Security Staff scans EVENTRA Ticket QR at gate via Staff Scanner (/api/checkins/verify & /api/checkins/confirm)
+   ↓
+13. Pass is marked CHECKED IN (duplicate check-ins rejected atomically)
+```
+
+### 🏷️ Critical Distinction Between the Two QR Codes
+
+EVENTRA separates payment processing from event gate access with two distinct systems:
+
+| Characteristic | 📱 1. Razorpay Payment / UPI Gateway | 🎫 2. EVENTRA Ticket QR Code |
+| :--- | :--- | :--- |
+| **Purpose** | Used by attendee to pay admission fee | Used by attendee to gain entry at the venue gate |
+| **Provider** | Handled strictly by official Razorpay Checkout Gateway | Generated by EVENTRA Backend Ticketing Engine |
+| **Format** | Gateway-owned checkout / UPI payment interface | Cryptographic Ticket Token (`EVENTRA-QR-XXXX-XXXX`) |
+| **Audience** | Attendee (paying via Razorpay Checkout) | Gate Security Staff (scanned via Staff Web Scanner) |
+| **Lifecycle** | Transient (expires after payment completion/cancellation) | Permanent (persists in PostgreSQL `tickets` table) |
+
+### 🧪 Razorpay Test Mode Notes & Sandbox Behavior
+
+- **Credentials:** Uses `RAZORPAY_KEY_ID=rzp_test_...` and server-side `RAZORPAY_KEY_SECRET`. All secrets remain strictly on the backend.
+- **Zero Real Money:** All transactions use Razorpay Test Mode sandbox simulations. No actual bank transfers or real money occur.
+- **Gateway Ownership:** EVENTRA does not render any static, fake, or decorative QR graphics on its payment page. Razorpay Checkout owns the payment interface entirely when opened.
+- **Payment Method Availability:** In Razorpay Test Mode, the payment methods presented (UPI, Cards, Netbanking, Wallets) are determined by the Razorpay merchant dashboard configuration for the active API key. For test merchant key `rzp_test_Tejl7OweiZCaRP`, Checkout serves the active test options (Cards, Netbanking, Wallets) directly within the secure Razorpay modal.
+
+### 🚀 Production Deployment Requirements
+
+To transition this payment system to live production:
+1. Activate live business account at [dashboard.razorpay.com](https://dashboard.razorpay.com).
+2. Set live environment variables: `RAZORPAY_KEY_ID=rzp_live_...` and `RAZORPAY_KEY_SECRET=...`.
+3. Configure Razorpay Webhooks (`payment.captured`, `payment.failed`, `order.paid`) pointing to `https://<your-domain>/api/payments/webhook` with signature secret verification for asynchronous multi-channel confirmation.
+4. Ensure SSL/TLS (HTTPS) is enforced on all checkout endpoints.
+

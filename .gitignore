@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Python cache
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# Local database fallback
+server/eventra-db-store.json
+
+# Local executables
+*.exe
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/

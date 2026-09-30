@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="EVENTRA - Intelligent Event Management, Sponsorship & Crowd Safety Platform. Complete unified platform.">
+  <title>EVENTRA - Intelligent Event & Crowd Management Platform</title>
+  
+  <!-- Google Fonts: Outfit & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <!-- Ambient background glow effects -->
+  <div class="glow-sphere glow-1" aria-hidden="true"></div>
+  <div class="glow-sphere glow-2" aria-hidden="true"></div>
+  <div class="glow-sphere glow-3" aria-hidden="true"></div>
+
+  <!-- Main Application Wrapper -->
+  <div class="app-container" id="app-root">
+    
+    <!-- Top Navigation Header -->
+    <header class="app-header" id="main-header">
+      <div class="brand-container">
+        <div class="brand-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="12 2 19 21 12 17 5 21 12 2"></polygon>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">EVENTRA</span>
+        </div>
+      </div>
+
+      <!-- Navigation Links for Active Sessions -->
+      <nav class="nav-menu hidden" id="dash-nav-menu">
+        <button class="nav-item active" data-view="home" id="nav-btn-home">Overview</button>
+        <button class="nav-item hidden" data-view="events" id="nav-btn-events">Events</button>
+        <button class="nav-item hidden" data-view="tickets" id="nav-btn-tickets">My Tickets</button>
+        <button class="nav-item hidden" data-view="sponsorships" id="nav-btn-sponsorships">Sponsorships</button>
+        <button class="nav-item hidden" data-view="scanner" id="nav-btn-scanner">QR Scanner</button>
+        <button class="nav-item hidden" data-view="crowd" id="nav-btn-crowd">Crowd & Safety</button>
+        <button class="nav-item hidden" data-view="analytics" id="nav-btn-analytics">Analytics</button>
+        <button class="nav-item hidden" data-view="admin" id="nav-btn-admin">Governance</button>
+      </nav>
+
+      <nav class="header-nav" id="auth-nav-actions">
+        <!-- Injected dynamically when user is logged in -->
+        <div id="user-pill-container" class="hidden" style="display: flex; align-items: center; gap: 0.75rem;">
+          <!-- Notification Bell & Center -->
+          <div class="notif-wrapper" id="notif-wrapper">
+            <button class="notif-bell-btn" id="notif-bell-btn" title="Notifications & Event Reminders" aria-label="Notifications">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+              </svg>
+              <span class="notif-badge hidden" id="notif-badge">0</span>
+            </button>
+            <div class="notif-dropdown hidden" id="notif-dropdown">
+              <div class="notif-header">
+                <h4>🔔 In-App Notifications</h4>
+                <button type="button" class="notif-clear-btn" id="notif-mark-all-btn">Mark All Read</button>
+              </div>
+              <div class="notif-list" id="notif-list">
+                <div class="notif-empty">No notifications yet.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="user-pill" id="user-pill-btn" role="button" tabindex="0" title="Click to manage profile">
+            <div class="user-avatar" id="header-user-avatar">AD</div>
+            <div class="user-meta">
+              <span class="user-name" id="header-user-name">Admin User</span>
+              <span class="role-tag" id="header-user-role">Admin</span>
+            </div>
+            <svg class="chevron-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="logout-btn" title="Sign out of Eventra">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+            <span>Logout</span>
+          </button>
+        </div>
+      </nav>
+    </header>
+
+    <!-- MAIN VIEW AREA -->
+    <main class="main-content" id="main-view">
+
+      <!-- ============================================================= -->
+      <!-- VIEW 1: AUTHENTICATION (LOGIN & REGISTRATION)                 -->
+      <!-- ============================================================= -->
+      <section class="auth-section" id="view-auth">
+        
+        <!-- Left Showcase Side -->
+        <div class="auth-showcase">
+          <div class="showcase-content">
+            <div class="badge-pill">All-in-One Platform Architecture</div>
+            <h1 class="showcase-title">Intelligent Event, Sponsorship & Crowd Safety</h1>
+            <p class="showcase-desc">
+              A unified system integrating multi-role authentication, dynamic event creation with venue zones, digital QR ticketing, gate verification, and real-time crowd congestion monitoring.
+            </p>
+
+            <!-- Feature Checklist -->
+            <div class="feature-grid">
+              <div class="feature-item">
+                <div class="feature-icon role-org">📅</div>
+                <div class="feature-text">
+                  <strong>Event Organizers</strong>
+                  <span>Create events, define venue zones & schedules</span>
+                </div>
+              </div>
+              <div class="feature-item">
+                <div class="feature-icon role-att">🎟️</div>
+                <div class="feature-text">
+                  <strong>Attendees</strong>
+                  <span>Discover events & get visual digital QR tickets</span>
+                </div>
+              </div>
+              <div class="feature-item">
+                <div class="feature-icon role-spon">🤝</div>
+                <div class="feature-text">
+                  <strong>Corporate Sponsors</strong>
+                  <span>Tiered sponsorship discovery & proposal tracking</span>
+                </div>
+              </div>
+              <div class="feature-item">
+                <div class="feature-icon role-staff">🛡️</div>
+                <div class="feature-text">
+                  <strong>Gate Staff & Crowd Safety</strong>
+                  <span>Sub-second QR scan verification & zone monitoring</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Right Side: Authentication Card -->
+        <div class="auth-card-wrapper">
+          <div class="auth-card">
+            
+            <!-- Auth Toggle Tabs -->
+            <div class="auth-tabs" role="tablist">
+              <button class="auth-tab active" id="tab-login" role="tab" aria-selected="true">Secure Login</button>
+              <button class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create Account</button>
+            </div>
+
+            <div class="auth-card-header">
+              <h2 id="auth-form-title">Welcome Back</h2>
+              <p id="auth-form-subtitle">Enter your credentials to access your role dashboard</p>
+            </div>
+
+            <!-- Role Selector Bar -->
+            <div class="role-selector-container">
+              <label class="field-label">Select Your Role</label>
+              <div class="role-pill-group" id="role-selector">
+                <button type="button" class="role-pill active" data-role="1">
+                  <span class="role-emoji">📅</span> Organizer
+                </button>
+                <button type="button" class="role-pill" data-role="2">
+                  <span class="role-emoji">🎟️</span> Attendee
+                </button>
+                <button type="button" class="role-pill" data-role="3">
+                  <span class="role-emoji">🤝</span> Sponsor
+                </button>
+                <button type="button" class="role-pill" data-role="4">
+                  <span class="role-emoji">🛡️</span> Staff
+                </button>
+                <button type="button" class="role-pill" data-role="5">
+                  <span class="role-emoji">👑</span> Admin
+                </button>
+              </div>
+            </div>
+
+            <!-- Form Error Notification -->
+            <div class="form-alert hidden" id="auth-alert" role="alert"></div>
+
+            <!-- LOGIN & REGISTRATION FORM -->
+            <form id="auth-form" novalidate>
+              
+              <!-- Field: Name (Register only) -->
+              <div class="form-group hidden" id="field-group-name">
+                <label for="inp-name" class="field-label">Full Name</label>
+                <div class="input-with-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                  <input type="text" id="inp-name" placeholder="e.g. Naga Parthiv" autocomplete="name">
+                </div>
+              </div>
+
+              <!-- Field: Email -->
+              <div class="form-group">
+                <label for="inp-email" class="field-label">Email Address</label>
+                <div class="input-with-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+                  <input type="email" id="inp-email" placeholder="name@eventra.com" required autocomplete="email">
+                </div>
+              </div>
+
+              <!-- Field: Phone (Register only) -->
+              <div class="form-group hidden" id="field-group-phone">
+                <label for="inp-phone" class="field-label">Phone Number</label>
+                <div class="input-with-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>
+                  <input type="tel" id="inp-phone" placeholder="+91 98765 43210" autocomplete="tel">
+                </div>
+              </div>
+
+              <!-- Field: Organization (Organizer & Sponsor in Register mode) -->
+              <div class="form-group hidden" id="field-group-org">
+                <label for="inp-org" class="field-label" id="label-org">Organization / Club Name</label>
+                <div class="input-with-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>
+                  <input type="text" id="inp-org" placeholder="e.g. IIIT Kottayam Student Council">
+                </div>
+              </div>
+
+              <!-- Field: Master Admin Key (Admin only in Register mode) -->
+              <div class="form-group hidden" id="field-group-adminkey">
+                <label for="inp-adminkey" class="field-label">Master Admin Authorization Key</label>
+                <div class="input-with-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-2-2l2 2m-4 4l-4 4-2-2-4 4 2 2-4 4"></path><circle cx="7" cy="17" r="3"></circle></svg>
+                  <input type="password" id="inp-adminkey" placeholder="Required for Admin role">
+                </div>
+                <span class="field-help">Demo key: <code>EVENTRA_ADMIN_2026</code></span>
+              </div>
+
+              <!-- Field: Password -->
+              <div class="form-group" style="margin-bottom: 0.65rem;">
+                <label for="inp-password" class="field-label">Password</label>
+                <div class="input-with-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                  <input type="password" id="inp-password" placeholder="••••••••" required autocomplete="current-password">
+                </div>
+                <span class="field-help" id="pass-register-hint" style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.25rem; display: none;">Minimum 7 characters (can consist of letters, digits, or symbols).</span>
+              </div>
+
+              <!-- Forgot Password Link (Between Password & Submit Button) -->
+              <div class="forgot-pass-row" id="row-forgot-password">
+                <button type="button" class="forgot-pass-link" id="btn-forgot-password">Forgot Password?</button>
+              </div>
+
+              <!-- Field: Confirm Password (Register only) -->
+              <div class="form-group hidden" id="field-group-confirm">
+                <label for="inp-confirm" class="field-label">Confirm Password</label>
+                <div class="input-with-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                  <input type="password" id="inp-confirm" placeholder="••••••••" autocomplete="new-password">
+                </div>
+              </div>
+
+              <!-- Submit Button -->
+              <button type="submit" class="btn btn-primary btn-block" id="btn-auth-submit">
+                <span id="btn-auth-text">Log In to Eventra</span>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+              </button>
+            </form>
+
+
+
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ============================================================= -->
+      <!-- VIEW 2: UNIFIED ROLE DASHBOARDS & EVENT WORKSPACES            -->
+      <!-- ============================================================= -->
+      <section class="dashboard-section hidden" id="view-dashboard">
+        
+        <!-- Welcome Hero Banner -->
+        <div class="dashboard-hero">
+          <div class="hero-text-content">
+            <div class="role-badge" id="dash-role-badge">Organizer Console</div>
+            <h1 class="hero-title" id="dash-welcome-title">Welcome back, Organizer!</h1>
+            <p class="hero-subtitle" id="dash-welcome-sub">
+              Access role-specific modules, monitor operations, and manage your Eventra identity.
+            </p>
+          </div>
+          <div class="hero-actions">
+            <button class="btn btn-glass" id="open-profile-btn">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+              <span>Manage Profile</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Role-Specific Dynamic Workspace Area -->
+        <div id="role-workspace">
+          <!-- Dynamic Content Populated by app.js based on User Role -->
+        </div>
+
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- MODAL: CREATE EVENT (ORGANIZER)                               -->
+  <!-- ============================================================= -->
+  <div class="modal-overlay hidden" id="create-event-modal" role="dialog" aria-modal="true">
+    <div class="modal-card modal-card-lg">
+      <div class="modal-header">
+        <h3>Create New Event</h3>
+        <button class="modal-close-btn" id="close-event-modal-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-alert alert-error hidden" id="create-event-alert" style="margin-bottom: 1.25rem;"></div>
+
+        <form id="create-event-form">
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label class="field-label">Event Name</label>
+              <input type="text" id="ev-name" class="modal-input" placeholder="e.g. TechFest 2026" required>
+            </div>
+            <div class="form-group flex-1">
+              <label class="field-label">Event Category / Type</label>
+              <select id="ev-type" class="modal-input">
+                <option value="Tech Fest">Tech Fest / Hackathon</option>
+                <option value="Cultural Fest">Cultural Fest / Concert</option>
+                <option value="Sports Tournament">Sports Tournament</option>
+                <option value="Academic Conference">Academic Conference</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label class="field-label">Venue Location</label>
+              <input type="text" id="ev-venue" class="modal-input" placeholder="e.g. Campus Arena" required>
+            </div>
+            <div class="form-group flex-1">
+              <label class="field-label">Event Date (Future Date Only)</label>
+              <input type="date" id="ev-date" class="modal-input" required>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label class="field-label">Total Venue Capacity</label>
+              <input type="number" id="ev-capacity" class="modal-input" placeholder="1000" value="1000" min="1" step="1" required>
+            </div>
+            <div class="form-group flex-1">
+              <label class="field-label">Expected Attendance</label>
+              <input type="number" id="ev-attendance" class="modal-input" placeholder="800" value="800" min="1" step="1" required>
+            </div>
+            <div class="form-group flex-1">
+              <label class="field-label">Budget (INR)</label>
+              <input type="number" id="ev-budget" class="modal-input" placeholder="500000" value="500000" min="0" step="any" required>
+            </div>
+          </div>
+
+          <div class="divider-line"><span>Ticket Types & Rates Configuration</span></div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.65rem;">
+            <span style="font-size: 0.78rem; color: var(--text-secondary);">Sum of ticket seats must equal total venue capacity. Rates can be ₹0 (Free) or paid.</span>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="addTicketTierRow()" style="padding: 0.25rem 0.65rem; font-size: 0.78rem;">+ Add Ticket Type</button>
+          </div>
+          <div id="tiers-input-container">
+            <div class="tier-input-row">
+              <div class="form-group flex-2" style="margin-bottom: 0;">
+                <label class="field-label" style="font-size: 0.72rem; margin-bottom: 0.25rem;">Pass / Ticket Type</label>
+                <input type="text" class="modal-input tier-input-name" placeholder="e.g. General Admission" value="General Admission" required>
+              </div>
+              <div class="form-group flex-1" style="margin-bottom: 0;">
+                <label class="field-label" style="font-size: 0.72rem; margin-bottom: 0.25rem;">Seats</label>
+                <input type="number" class="modal-input tier-input-seats" placeholder="Seats" value="800" min="1" step="1" required title="Allocated seats">
+              </div>
+              <div class="form-group flex-1" style="margin-bottom: 0;">
+                <label class="field-label" style="font-size: 0.72rem; margin-bottom: 0.25rem;">Rate (₹)</label>
+                <input type="number" class="modal-input tier-input-price" placeholder="Rate (₹)" value="199" min="0" step="any" required title="Price in INR (0 for Free)">
+              </div>
+              <button type="button" class="btn-icon remove-tier-btn" onclick="removeTicketTierRow(this)" title="Remove Tier" style="color: #fda4af; padding: 0.4rem; margin-top: 1.1rem;" aria-label="Remove ticket tier">✕</button>
+            </div>
+
+            <div class="tier-input-row">
+              <div class="form-group flex-2" style="margin-bottom: 0;">
+                <label class="field-label" style="font-size: 0.72rem; margin-bottom: 0.25rem;">Pass / Ticket Type</label>
+                <input type="text" class="modal-input tier-input-name" placeholder="e.g. VIP Access Pass" value="VIP Access Pass" required>
+              </div>
+              <div class="form-group flex-1" style="margin-bottom: 0;">
+                <label class="field-label" style="font-size: 0.72rem; margin-bottom: 0.25rem;">Seats</label>
+                <input type="number" class="modal-input tier-input-seats" placeholder="Seats" value="200" min="1" step="1" required title="Allocated seats">
+              </div>
+              <div class="form-group flex-1" style="margin-bottom: 0;">
+                <label class="field-label" style="font-size: 0.72rem; margin-bottom: 0.25rem;">Rate (₹)</label>
+                <input type="number" class="modal-input tier-input-price" placeholder="Rate (₹)" value="499" min="0" step="any" required title="Price in INR (0 for Free)">
+              </div>
+              <button type="button" class="btn-icon remove-tier-btn" onclick="removeTicketTierRow(this)" title="Remove Tier" style="color: #fda4af; padding: 0.4rem; margin-top: 1.1rem;" aria-label="Remove ticket tier">✕</button>
+            </div>
+          </div>
+
+          <div class="divider-line"><span>Venue Zones Configuration</span></div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.65rem;">
+            <span style="font-size: 0.78rem; color: var(--text-secondary);">Define zones with positive capacities. Sum of zone capacities must be at least equal to total venue capacity.</span>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="addVenueZoneRow()" style="padding: 0.25rem 0.65rem; font-size: 0.78rem;">+ Add Venue Zone</button>
+          </div>
+          <div id="zones-input-container">
+            <div class="zone-input-row" style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem;">
+              <input type="text" class="modal-input flex-2 zone-name" placeholder="Zone Name (e.g. Main Stage)" value="Main Auditorium" required>
+              <input type="number" class="modal-input flex-1 zone-cap" placeholder="Capacity" value="700" min="1" step="1" required title="Zone capacity">
+              <button type="button" class="btn-icon remove-zone-btn" onclick="removeVenueZoneRow(this)" title="Remove Zone" style="color: #fda4af; padding: 0.4rem;" aria-label="Remove venue zone">✕</button>
+            </div>
+            <div class="zone-input-row" style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem;">
+              <input type="text" class="modal-input flex-2 zone-name" placeholder="Zone Name (e.g. Food Court)" value="Food Court & Stalls" required>
+              <input type="number" class="modal-input flex-1 zone-cap" placeholder="Capacity" value="300" min="1" step="1" required title="Zone capacity">
+              <button type="button" class="btn-icon remove-zone-btn" onclick="removeVenueZoneRow(this)" title="Remove Zone" style="color: #fda4af; padding: 0.4rem;" aria-label="Remove venue zone">✕</button>
+            </div>
+          </div>
+
+          <div class="divider-line"><span>Event Schedule Highlights</span></div>
+          <div id="schedule-input-container">
+            <div class="schedule-input-row">
+              <input type="text" class="modal-input flex-2 sched-title" placeholder="Session Title" value="Keynote Address">
+              <input type="text" class="modal-input flex-1 sched-time" placeholder="Time Window" value="10:00 AM - 12:00 PM">
+            </div>
+          </div>
+
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" id="cancel-event-btn">Cancel</button>
+            <button type="submit" class="btn btn-primary">Create Event</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- MODAL: USER PROFILE & PASSWORD UPDATE                         -->
+  <!-- ============================================================= -->
+  <div class="modal-overlay hidden" id="profile-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="modal-title">Account Profile</h3>
+        <button class="modal-close-btn" id="close-profile-btn" aria-label="Close Profile Modal">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="profile-card-preview">
+          <div class="user-avatar-lg" id="modal-avatar">RG</div>
+          <div class="profile-preview-info">
+            <h4 id="modal-preview-name">Rohit Somuri</h4>
+            <span class="badge-role" id="modal-preview-role">Organizer</span>
+            <span class="preview-email" id="modal-preview-email">organizer@fest.org</span>
+          </div>
+        </div>
+
+        <div class="form-alert hidden" id="profile-alert"></div>
+
+        <!-- Edit Profile Form -->
+        <form id="profile-edit-form">
+          <div class="form-group">
+            <label for="prof-name" class="field-label">Display Name</label>
+            <input type="text" id="prof-name" class="modal-input" required>
+          </div>
+
+          <div class="form-group">
+            <label for="prof-phone" class="field-label">Phone Number</label>
+            <input type="tel" id="prof-phone" class="modal-input">
+          </div>
+
+          <div class="form-group" id="prof-group-org">
+            <label for="prof-org" class="field-label">Organization / Club</label>
+            <input type="text" id="prof-org" class="modal-input">
+          </div>
+
+          <div class="divider-line"><span>Security Credentials</span></div>
+
+          <div class="form-group">
+            <label for="prof-cur-pass" class="field-label">Current Password (Required to update password)</label>
+            <input type="password" id="prof-cur-pass" class="modal-input" placeholder="Verify current password">
+          </div>
+
+          <div class="form-group">
+            <label for="prof-new-pass" class="field-label">New Password (Leave blank to keep unchanged)</label>
+            <input type="password" id="prof-new-pass" class="modal-input" placeholder="At least 7 characters (letters, digits, symbols)">
+            <span class="field-help" style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.25rem; display: block;">Minimum 7 characters. Can consist of letters, digits, or symbols.</span>
+          </div>
+
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" id="cancel-profile-btn">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="save-profile-btn">Save Changes</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  <!-- ============================================================= -->
+  <!-- MODAL: EVENT SPONSORSHIP PLEDGE & TIER SELECTION              -->
+  <!-- ============================================================= -->
+  <div class="modal-overlay hidden" id="sponsor-modal" role="dialog" aria-modal="true" aria-labelledby="sponsor-modal-title">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h3 id="sponsor-modal-title">Sponsor Event Partnership</h3>
+        <button class="modal-close-btn" id="close-sponsor-btn" aria-label="Close Sponsor Modal">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div id="sponsor-modal-event-summary" class="sponsor-event-summary"></div>
+
+        <form id="sponsor-form" onsubmit="handleSponsorshipSubmit(event)">
+          <input type="hidden" id="sponsor-event-id">
+
+          <div class="field-label" style="margin-bottom: 0.6rem;">Select Sponsorship Package</div>
+          <div class="tier-cards-grid">
+            <label class="tier-select-card active" data-tier="Platinum">
+              <input type="radio" name="sponsor-tier" value="Platinum" checked style="display: none;">
+              <div class="tier-card-header">
+                <span class="tier-icon">💎</span>
+                <span class="tier-title">Platinum Partner</span>
+              </div>
+              <div class="tier-price">₹50,000</div>
+              <ul class="tier-perks">
+                <li>✓ Prime Main Stage Banner & Keynote Shoutout</li>
+                <li>✓ Premium VIP Booth in Main Auditorium</li>
+                <li>✓ 10 Complimentary VIP Event Passes</li>
+                <li>✓ Top Logo Placement on Portal & Badges</li>
+              </ul>
+            </label>
+
+            <label class="tier-select-card" data-tier="Gold">
+              <input type="radio" name="sponsor-tier" value="Gold" style="display: none;">
+              <div class="tier-card-header">
+                <span class="tier-icon">🥇</span>
+                <span class="tier-title">Gold Partner</span>
+              </div>
+              <div class="tier-price">₹25,000</div>
+              <ul class="tier-perks">
+                <li>✓ Prominent Food Court / Workshop Booth</li>
+                <li>✓ Digital Displays Across All Venue Screens</li>
+                <li>✓ 5 Complimentary VIP Event Passes</li>
+                <li>✓ Promoted Sponsor Listing on App</li>
+              </ul>
+            </label>
+
+            <label class="tier-select-card" data-tier="Silver">
+              <input type="radio" name="sponsor-tier" value="Silver" style="display: none;">
+              <div class="tier-card-header">
+                <span class="tier-icon">🥈</span>
+                <span class="tier-title">Silver Partner</span>
+              </div>
+              <div class="tier-price">₹10,000</div>
+              <ul class="tier-perks">
+                <li>✓ Logo on Marketing Material & Event Schedule</li>
+                <li>✓ 2 Complimentary VIP Event Passes</li>
+                <li>✓ Social Media Mention & Acknowledgement</li>
+              </ul>
+            </label>
+          </div>
+
+          <div class="divider-line"><span>Sponsor Organization Details</span></div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="sponsor-org-name" class="field-label">Brand / Organization Name</label>
+              <input type="text" id="sponsor-org-name" class="modal-input" required placeholder="e.g. TechCorp Solutions">
+            </div>
+            <div class="form-group flex-1">
+              <label for="sponsor-website" class="field-label">Company Website URL</label>
+              <input type="url" id="sponsor-website" class="modal-input" placeholder="https://company.com">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="sponsor-contact-person" class="field-label">Lead Representative</label>
+              <input type="text" id="sponsor-contact-person" class="modal-input" required placeholder="Representative Name">
+            </div>
+            <div class="form-group flex-1">
+              <label for="sponsor-notes" class="field-label">Booth / Branding Requests</label>
+              <input type="text" id="sponsor-notes" class="modal-input" placeholder="e.g. Near main entrance, 2 power sockets">
+            </div>
+          </div>
+
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" id="cancel-sponsor-btn">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="confirm-sponsor-btn">Confirm & Pledge Sponsorship</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 4: Secure Forgot Password / Email OTP Password Reset Modal -->
+  <div class="modal-overlay hidden" id="forgot-modal" role="dialog" aria-modal="true" aria-labelledby="forgot-modal-title">
+    <div class="modal-card modal-md">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-badge">Account Security</span>
+          <h3 class="modal-title" id="forgot-modal-title">Reset Your Password</h3>
+          <p class="modal-sub">Secure 6-digit email OTP verification</p>
+        </div>
+        <button type="button" class="btn-icon" id="close-forgot-btn" aria-label="Close modal">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Step Indicators -->
+        <div class="step-indicator-dots" id="forgot-step-indicators">
+          <span class="step-dot active" id="dot-step-1" title="Step 1: Registered Email"></span>
+          <span class="step-dot" id="dot-step-2" title="Step 2: Enter 6-Digit OTP"></span>
+          <span class="step-dot" id="dot-step-3" title="Step 3: New Password"></span>
+        </div>
+
+        <div class="form-alert alert-error hidden" id="forgot-alert"></div>
+        <div class="form-alert alert-success hidden" id="forgot-success-alert"></div>
+
+        <form id="forgot-password-form" onsubmit="return false;">
+          <!-- Step 1: Account Email Identification -->
+          <div id="forgot-step-1">
+            <div class="form-group">
+              <label for="forgot-email" class="field-label">Registered Email Address</label>
+              <div class="input-with-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+                <input type="email" id="forgot-email" class="modal-input" required placeholder="e.g. attendee@fest.org">
+              </div>
+              <span class="field-help">A secure 6-digit verification code will be dispatched to this address.</span>
+            </div>
+
+            <div class="modal-actions" style="margin-top: 1.5rem;">
+              <button type="button" class="btn btn-secondary" id="cancel-forgot-btn">Cancel</button>
+              <button type="button" class="btn btn-primary" id="forgot-verify-btn">Send 6-Digit OTP →</button>
+            </div>
+          </div>
+
+          <!-- Step 2: 6-Digit Email OTP Verification -->
+          <div id="forgot-step-2" class="hidden">
+            <div class="info-banner" style="background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: var(--radius-sm); padding: 0.85rem; margin-bottom: 1.25rem;">
+              <div style="font-size: 0.85rem; color: var(--text-primary); font-weight: 600;">Verification Code Sent</div>
+              <div style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 0.2rem;" id="forgot-otp-email-hint">We have sent a 6-digit code to your email. It expires in 10 minutes.</div>
+            </div>
+
+            <div class="form-group">
+              <label for="forgot-otp" class="field-label" style="text-align: center; display: block;">Enter 6-Digit Verification Code</label>
+              <input type="text" id="forgot-otp" class="modal-input otp-input-field" maxlength="6" pattern="[0-9]{6}" inputmode="numeric" placeholder="••••••" autocomplete="one-time-code">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.6rem;">
+                <span class="field-help" id="forgot-attempts-hint" style="font-size: 0.75rem; color: var(--text-muted);">Max 5 attempts allowed</span>
+                <button type="button" class="btn-link" id="forgot-resend-btn" style="font-size: 0.78rem; color: #a5b4fc; background: none; border: none; cursor: pointer; text-decoration: underline;">Resend Code</button>
+              </div>
+            </div>
+
+            <div class="modal-actions" style="margin-top: 1.5rem;">
+              <button type="button" class="btn btn-secondary" id="forgot-step2-back-btn">← Back</button>
+              <button type="button" class="btn btn-primary" id="forgot-verify-otp-btn">Verify Code & Continue →</button>
+            </div>
+          </div>
+
+          <!-- Step 3: New Password Setup -->
+          <div id="forgot-step-3" class="hidden">
+            <div class="info-banner" style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: var(--radius-sm); padding: 0.85rem; margin-bottom: 1.25rem;">
+              <div style="font-size: 0.85rem; color: var(--emerald-success); font-weight: 600;">✓ Email Verified Successfully</div>
+              <div style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 0.2rem;">Choose a strong new password with at least 7 characters.</div>
+            </div>
+
+            <div class="form-group">
+              <label for="forgot-new-password" class="field-label">New Password</label>
+              <div class="input-with-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                <input type="password" id="forgot-new-password" class="modal-input" placeholder="At least 7 characters">
+              </div>
+              <span class="field-help" style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.25rem; display: block;">Minimum 7 characters.</span>
+            </div>
+
+            <div class="form-group">
+              <label for="forgot-confirm-password" class="field-label">Confirm New Password</label>
+              <div class="input-with-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                <input type="password" id="forgot-confirm-password" class="modal-input" placeholder="Re-enter new password">
+              </div>
+            </div>
+
+            <div class="modal-actions" style="margin-top: 1.5rem;">
+              <button type="button" class="btn btn-secondary" id="forgot-back-btn">← Back</button>
+              <button type="button" class="btn btn-primary" id="forgot-save-btn">Update Password & Login</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 4B: Event Feedback & Rating Modal (Attendee Feature) -->
+  <div class="modal-overlay hidden" id="feedback-modal" role="dialog" aria-modal="true" aria-labelledby="feedback-modal-title">
+    <div class="modal-card modal-md">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-badge" style="background: rgba(251, 191, 36, 0.15); color: #fbbf24; border-color: rgba(251, 191, 36, 0.3);">Event Feedback</span>
+          <h3 class="modal-title" id="feedback-modal-title">Rate & Review Event</h3>
+          <p class="modal-sub" id="feedback-event-subtitle">Share your experience with organizers and fellow attendees</p>
+        </div>
+        <button type="button" class="btn-icon" id="close-feedback-btn" aria-label="Close modal">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="form-alert alert-error hidden" id="feedback-alert"></div>
+        <div class="form-alert alert-success hidden" id="feedback-success-alert"></div>
+
+        <form id="event-feedback-form" onsubmit="return false;">
+          <input type="hidden" id="feedback-event-id">
+
+          <!-- Star Rating Component -->
+          <div class="form-group" style="text-align: center;">
+            <label class="field-label" style="display: block; font-size: 0.9rem; font-weight: 600;">Overall Event Rating</label>
+            <div class="star-rating-box" id="feedback-stars-box">
+              <button type="button" class="star-btn" data-star="1" title="1 Star - Poor">★</button>
+              <button type="button" class="star-btn" data-star="2" title="2 Stars - Fair">★</button>
+              <button type="button" class="star-btn" data-star="3" title="3 Stars - Good">★</button>
+              <button type="button" class="star-btn" data-star="4" title="4 Stars - Very Good">★</button>
+              <button type="button" class="star-btn" data-star="5" title="5 Stars - Excellent">★</button>
+            </div>
+            <input type="hidden" id="feedback-rating-val" value="5">
+            <div class="star-rating-caption" id="feedback-rating-caption">5 Stars - Excellent!</div>
+          </div>
+
+          <!-- Comment Box -->
+          <div class="form-group">
+            <label for="feedback-comment-input" class="field-label">Written Feedback & Suggestions (Optional)</label>
+            <textarea id="feedback-comment-input" class="modal-input" rows="4" maxlength="1000" placeholder="Share your experience regarding speakers, audio/visuals, crowd safety, check-in flow, and overall organization..."></textarea>
+            <div class="feedback-char-counter"><span id="feedback-char-count">0</span> / 1000 characters</div>
+          </div>
+
+          <div class="modal-actions" style="margin-top: 1.5rem;">
+            <button type="button" class="btn btn-secondary" id="cancel-feedback-btn">Cancel</button>
+            <button type="button" class="btn btn-primary" id="feedback-submit-btn">Submit Feedback</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 4C: View Event Feedback & Ratings (Organizer & Admin Feature) -->
+  <div class="modal-overlay hidden" id="event-feedback-view-modal" role="dialog" aria-modal="true" aria-labelledby="efv-modal-title">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-badge" style="background: rgba(251, 191, 36, 0.15); color: #fbbf24; border-color: rgba(251, 191, 36, 0.3);">Feedback Intelligence</span>
+          <h3 class="modal-title" id="efv-modal-title">Attendee Reviews & Ratings</h3>
+          <p class="modal-sub" id="efv-event-subtitle">Audited ratings & attendee comments stored in PostgreSQL</p>
+        </div>
+        <button type="button" class="btn-icon" id="close-efv-btn" aria-label="Close modal">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Aggregated Ratings Scoreboard -->
+        <div class="rating-summary-card" id="efv-summary-card">
+          <div style="text-align: center;">
+            <div class="rating-score-large" id="efv-score-avg">0.0</div>
+            <div style="color: #fbbf24; font-size: 1.1rem; margin-top: 0.2rem;" id="efv-stars-display">☆☆☆☆☆</div>
+            <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem;" id="efv-total-count">0 Reviews</div>
+          </div>
+          <div class="rating-breakdown-bar" id="efv-distribution-bars">
+            <!-- 5 Star -->
+            <div class="rating-bar-row">
+              <span style="width: 28px;">5 ★</span>
+              <div class="bar-track"><div class="bar-fill" id="bar-5-fill" style="width: 0%;"></div></div>
+              <span style="width: 24px; text-align: right;" id="bar-5-count">0</span>
+            </div>
+            <!-- 4 Star -->
+            <div class="rating-bar-row">
+              <span style="width: 28px;">4 ★</span>
+              <div class="bar-track"><div class="bar-fill" id="bar-4-fill" style="width: 0%;"></div></div>
+              <span style="width: 24px; text-align: right;" id="bar-4-count">0</span>
+            </div>
+            <!-- 3 Star -->
+            <div class="rating-bar-row">
+              <span style="width: 28px;">3 ★</span>
+              <div class="bar-track"><div class="bar-fill" id="bar-3-fill" style="width: 0%;"></div></div>
+              <span style="width: 24px; text-align: right;" id="bar-3-count">0</span>
+            </div>
+            <!-- 2 Star -->
+            <div class="rating-bar-row">
+              <span style="width: 28px;">2 ★</span>
+              <div class="bar-track"><div class="bar-fill" id="bar-2-fill" style="width: 0%;"></div></div>
+              <span style="width: 24px; text-align: right;" id="bar-2-count">0</span>
+            </div>
+            <!-- 1 Star -->
+            <div class="rating-bar-row">
+              <span style="width: 28px;">1 ★</span>
+              <div class="bar-track"><div class="bar-fill" id="bar-1-fill" style="width: 0%;"></div></div>
+              <span style="width: 24px; text-align: right;" id="bar-1-count">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Individual Reviews List -->
+        <h4 style="font-size: 0.95rem; font-weight: 600; margin-bottom: 0.75rem;">Attendee Feedback Entries</h4>
+        <div id="efv-reviews-container" style="max-height: 340px; overflow-y: auto; padding-right: 0.25rem;">
+          <p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 1.5rem 0;">Loading feedback data...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Modal 5: Payment & Pass Checkout Modal -->
+  <div class="modal-overlay hidden" id="payment-modal" role="dialog" aria-modal="true" aria-labelledby="pm-modal-title">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <div style="display: flex; align-items: center; gap: 0.6rem;">
+            <span class="modal-badge" id="pm-event-type">Event</span>
+            <button type="button" onclick="openRazorpayConfigModal()" style="background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 4px; padding: 0.15rem 0.5rem; color: #a5b4fc; font-size: 0.72rem; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 0.3rem;" title="Configure Razorpay API Keys">⚙ Razorpay API Keys</button>
+          </div>
+          <h3 class="modal-title" id="pm-modal-title">Select Pass & Checkout</h3>
+          <p class="modal-sub"><strong id="pm-event-name" style="color: #fff;">Event Name</strong> • <span id="pm-event-meta">Venue • Date</span></p>
+        </div>
+        <button type="button" class="btn-icon" id="close-payment-modal-btn" aria-label="Close modal">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div id="payment-form-area">
+          <div class="form-group">
+            <label class="field-label" style="font-weight: 700; margin-bottom: 0.65rem;">1. Select Admission Pass Tier</label>
+            <div id="payment-tier-cards" class="pm-tiers-grid"></div>
+          </div>
+
+          <div class="form-group" style="margin-top: 1.25rem;">
+            <label class="field-label" style="font-weight: 700; margin-bottom: 0.65rem;">2. Payment Method</label>
+            <div class="pm-methods-row">
+              <button type="button" class="pm-method-btn active" data-method="UPI" onclick="selectPayMethod(this)">
+                <span>📱</span> UPI / QR
+              </button>
+              <button type="button" class="pm-method-btn" data-method="Card" onclick="selectPayMethod(this)">
+                <span>💳</span> Card
+              </button>
+              <button type="button" class="pm-method-btn" data-method="Netbanking" onclick="selectPayMethod(this)">
+                <span>🏦</span> Net Banking
+              </button>
+            </div>
+
+            <!-- UPI / QR Payment Area -->
+            <div id="pm-upi-area" class="pm-method-area" style="margin-top: 0.85rem;">
+              <div class="pm-box" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: var(--radius-md); padding: 1.35rem 1.25rem; text-align: center;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 0.75rem;">
+                  <div style="display: flex; align-items: center; gap: 0.5rem; text-align: left;">
+                    <div style="width: 32px; height: 32px; background: #6366f1; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.95rem; color: #fff;">₹</div>
+                    <div>
+                      <div style="font-size: 0.95rem; font-weight: 700; color: #fff;">Razorpay UPI / QR</div>
+                      <div style="font-size: 0.72rem; color: var(--text-secondary);">Official Gateway • Test Mode</div>
+                    </div>
+                  </div>
+                  <span style="background: rgba(99, 102, 241, 0.2); border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 4px; padding: 0.2rem 0.55rem; font-size: 0.7rem; font-weight: 700; color: #a5b4fc;">TEST GATEWAY</span>
+                </div>
+
+                <!-- UPI Gateway Feature Card -->
+                <div style="margin: 0.75rem 0 1rem; padding: 1rem; background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: var(--radius-sm); text-align: center;">
+                  <div style="font-size: 2rem; margin-bottom: 0.35rem;">📱⚡</div>
+                  <div style="font-size: 0.92rem; font-weight: 600; color: #f8fafc; margin-bottom: 0.4rem;">
+                    Pay with Any UPI App or Dynamic QR
+                  </div>
+                  <p style="font-size: 0.8rem; color: #94a3b8; margin: 0 auto; max-width: 420px; line-height: 1.5;">
+                    Click <strong>Pay &amp; Confirm Pass</strong> to open Razorpay Checkout and complete your UPI payment. The official gateway will present the secure UPI &amp; QR interface.
+                  </p>
+                </div>
+
+                <!-- Supported Apps Pills -->
+                <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 0.45rem; margin-bottom: 1rem;">
+                  <span style="font-size: 0.72rem; padding: 0.25rem 0.6rem; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 999px; color: #cbd5e1; font-weight: 500;">Google Pay</span>
+                  <span style="font-size: 0.72rem; padding: 0.25rem 0.6rem; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 999px; color: #cbd5e1; font-weight: 500;">PhonePe</span>
+                  <span style="font-size: 0.72rem; padding: 0.25rem 0.6rem; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 999px; color: #cbd5e1; font-weight: 500;">Paytm</span>
+                  <span style="font-size: 0.72rem; padding: 0.25rem 0.6rem; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 999px; color: #cbd5e1; font-weight: 500;">BHIM UPI</span>
+                  <span style="font-size: 0.72rem; padding: 0.25rem 0.6rem; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 999px; color: #cbd5e1; font-weight: 500;">CRED</span>
+                </div>
+
+                <!-- Status indicator -->
+                <div id="pm-upi-status-box" style="padding: 0.65rem 0.85rem; background: rgba(30, 41, 59, 0.6); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); font-size: 0.82rem; color: var(--text-secondary);">
+                  <div style="display: flex; align-items: center; justify-content: space-between;">
+                    <span>Payment Status:</span>
+                    <span id="pm-upi-status-label" style="color: #60a5fa; font-weight: 600;">● Ready for Payment</span>
+                  </div>
+                  <div id="pm-upi-status-sub" style="font-size: 0.72rem; color: var(--text-secondary); margin-top: 0.25rem; text-align: left;">Click "Pay &amp; Confirm Pass" to open Razorpay Checkout and complete your UPI payment.</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card Payment Area -->
+            <div id="pm-card-area" class="pm-method-area" style="margin-top: 0.85rem; display: none;">
+              <div class="pm-box">
+                <div class="form-group" style="margin-bottom: 0.75rem;">
+                  <label class="field-label">Card Number</label>
+                  <input type="text" class="modal-input" placeholder="4123 •••• •••• 9876" value="4532 8901 2345 6789">
+                </div>
+                <div class="form-row" style="margin-bottom: 0;">
+                  <div class="form-group flex-1">
+                    <label class="field-label">Expiry (MM/YY)</label>
+                    <input type="text" class="modal-input" placeholder="08/28" value="12/27">
+                  </div>
+                  <div class="form-group flex-1">
+                    <label class="field-label">CVV</label>
+                    <input type="password" class="modal-input" placeholder="•••" value="888" maxlength="3">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Netbanking Area -->
+            <div id="pm-netbank-area" class="pm-method-area" style="margin-top: 0.85rem; display: none;">
+              <div class="pm-box">
+                <div class="form-group" style="margin-bottom: 0;">
+                  <label class="field-label">Select Popular Bank</label>
+                  <select class="modal-input">
+                    <option selected>HDFC Bank</option>
+                    <option>State Bank of India (SBI)</option>
+                    <option>ICICI Bank</option>
+                    <option>Axis Bank</option>
+                    <option>Kotak Mahindra Bank</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Order Summary Area -->
+          <div class="pm-summary-box" style="margin-top: 1.25rem;">
+            <div class="pm-summary-row">
+              <span class="pm-summary-label">Selected Tier:</span>
+              <span class="pm-summary-val" id="pm-summary-tier">General Admission</span>
+            </div>
+            <div class="pm-summary-row">
+              <span class="pm-summary-label">Pass Price:</span>
+              <span class="pm-summary-val" id="pm-summary-price">FREE</span>
+            </div>
+            <div class="pm-summary-row">
+              <span class="pm-summary-label">GST & Platform Convenience (18%):</span>
+              <span class="pm-summary-val" id="pm-summary-tax">₹0.00</span>
+            </div>
+            <div class="pm-summary-divider"></div>
+            <div class="pm-summary-row pm-total-row">
+              <span class="pm-total-label">Total Payable:</span>
+              <span class="pm-total-val" id="pm-summary-total">FREE</span>
+            </div>
+          </div>
+
+          <div class="modal-actions" style="margin-top: 1.5rem;">
+            <button type="button" class="btn btn-secondary" id="cancel-payment-btn">Cancel</button>
+            <button type="button" class="btn btn-primary" id="confirm-payment-btn" onclick="confirmPayment()">
+              <span>🔒 Pay & Confirm Pass</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Processing State -->
+        <div id="pm-processing" style="display: none; text-align: center; padding: 2.5rem 1rem;">
+          <div class="spinner" style="margin: 0 auto 1.25rem; width: 44px; height: 44px; border: 3px solid rgba(255,255,255,0.1); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
+          <h4 style="font-size: 1.15rem; font-weight: 700; color: #fff; margin-bottom: 0.35rem;">Processing Secure Payment...</h4>
+          <p style="font-size: 0.85rem; color: var(--text-secondary); margin: 0;">Connecting to payment gateway. Please do not refresh.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 6: Razorpay API Gateway Configuration -->
+  <div class="modal-overlay hidden" id="razorpay-config-modal" role="dialog" aria-modal="true" aria-labelledby="rzp-cfg-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border-color: rgba(99, 102, 241, 0.4);">Payment Gateway</span>
+          <h3 class="modal-title" id="rzp-cfg-title">Razorpay API Integration</h3>
+          <p class="modal-sub">Connect official Razorpay API test keys to launch the live popup checkout</p>
+        </div>
+        <button type="button" class="btn-icon" onclick="closeRazorpayConfigModal()" aria-label="Close modal">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div style="background: rgba(15, 23, 42, 0.65); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 0.85rem; margin-bottom: 1.25rem; font-size: 0.82rem; line-height: 1.5; color: var(--text-secondary);">
+          <div style="font-weight: 600; color: #fff; margin-bottom: 0.35rem;">⚡ How to get free official Razorpay Test Keys:</div>
+          1. Sign in to your dashboard at <a href="https://dashboard.razorpay.com/#/app/keys" target="_blank" rel="noopener" style="color: #6366f1; text-decoration: underline; font-weight: 600;">dashboard.razorpay.com</a> in <strong>Test Mode</strong>.<br>
+          2. Navigate to <strong>Settings &gt; API Keys &gt; Generate Key</strong>.<br>
+          3. Copy &amp; paste your <strong>Key ID</strong> (starts with <code>rzp_test_...</code>) and <strong>Key Secret</strong> below.
+        </div>
+
+        <div class="form-group" style="margin-bottom: 1rem;">
+          <label class="field-label" for="rzp-key-id-input">Razorpay Key ID</label>
+          <input type="text" id="rzp-key-id-input" class="modal-input" placeholder="rzp_test_xxxxxxxxxxxxxx" autocomplete="off">
+        </div>
+
+        <div class="form-group" style="margin-bottom: 1.15rem;">
+          <label class="field-label" for="rzp-key-secret-input">Razorpay Key Secret</label>
+          <input type="password" id="rzp-key-secret-input" class="modal-input" placeholder="Enter your Razorpay test key secret" autocomplete="off">
+        </div>
+
+        <div id="rzp-config-status-msg" style="display: none; padding: 0.75rem; border-radius: var(--radius-sm); font-size: 0.82rem; margin-bottom: 1rem;"></div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeRazorpayConfigModal()">Close</button>
+          <button type="button" class="btn btn-primary" id="rzp-save-keys-btn" onclick="saveRazorpayKeys()">
+            <span>🔗 Verify &amp; Save Keys</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toast-container" aria-live="polite"></div>
+
+  <!-- Main Logic -->
+  <script src="app.js"></script>
+</body>
+</html>
