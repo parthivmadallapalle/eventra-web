@@ -1,0 +1,24 @@
+{
+  "executionTimestamp": "2026-10-02 16:19:31",
+  "durationSeconds": 159.47,
+  "totalTestCases": 53,
+  "passed": 53,
+  "failed": 0,
+  "passRate": "100%",
+  "categories": {
+    "Black-Box (Equivalence & Boundary)": 11,
+    "Integration & Interface": 7,
+    "Non-Functional (Security, Perf, Rel, Usability)": 5,
+    "System & End-to-End": 6,
+    "Unit & White-Box": 11,
+    "Validation & Regression": 13
+  },
+  "evidence": {
+    "terminalLog": "P:\\coding.c\\c programes\\eventra-web\\tests\\final\\evidence\\test_execution_terminal.log",
+    "screenshots": [
+      "P:\\coding.c\\c programes\\eventra-web\\tests\\final\\evidence\\screenshots\\sys_01_organizer.png",
+      "P:\\coding.c\\c programes\\eventra-web\\tests\\final\\evidence\\screenshots\\sys_02_attendee.png",
+      "P:\\coding.c\\c programes\\eventra-web\\tests\\final\\evidence\\screenshots\\sys_03_invalid_login.png"
+    ]
+  }
+}

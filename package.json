@@ -7,7 +7,7 @@
     "start": "node server/server.js",
     "dev": "node --watch server/server.js",
     "bundle": "python bundle.py",
-    "test": "node server/test-api.js"
+    "test": "node tests/final/runner.js"
   },
   "keywords": [
     "event-management",

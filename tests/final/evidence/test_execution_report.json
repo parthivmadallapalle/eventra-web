@@ -1,0 +1,135 @@
+{
+  "executionTimestamp": "2026-10-02T10:54:54.450Z",
+  "total": 18,
+  "passed": 18,
+  "failed": 0,
+  "passRate": "100%",
+  "checks": [
+    {
+      "id": "TC-SYS-01",
+      "category": "System/Health",
+      "description": "Health Endpoint & Persistence Layer",
+      "status": "PASS",
+      "extra": "Engine: PostgreSQL Native"
+    },
+    {
+      "id": "TC-AUTH-01",
+      "category": "Authentication",
+      "description": "Organizer Authentication & Role Validation",
+      "status": "PASS",
+      "extra": "User: Rohit Somuri"
+    },
+    {
+      "id": "TC-AUTH-02",
+      "category": "Authentication",
+      "description": "Attendee Authentication & Profile Mapping",
+      "status": "PASS",
+      "extra": "User: Banoth Manohar"
+    },
+    {
+      "id": "TC-AUTH-03",
+      "category": "Authentication",
+      "description": "Invalid Credentials Perimeter Defense",
+      "status": "PASS",
+      "extra": ""
+    },
+    {
+      "id": "TC-EVENT-01",
+      "category": "Events",
+      "description": "Event Catalog & Tiers Retrieval",
+      "status": "PASS",
+      "extra": "Found 3 events"
+    },
+    {
+      "id": "TC-EVENT-02",
+      "category": "Events",
+      "description": "Event Validation Required Fields Guard",
+      "status": "PASS",
+      "extra": ""
+    },
+    {
+      "id": "TC-TICKET-01",
+      "category": "Ticketing",
+      "description": "Free Ticket Booking with Unique QR Generation",
+      "status": "PASS",
+      "extra": "Ticket #111"
+    },
+    {
+      "id": "TC-PAY-01",
+      "category": "Payments",
+      "description": "Razorpay Test Order Creation",
+      "status": "PASS",
+      "extra": "Order: order_Tj0vjqmF8HFUJT"
+    },
+    {
+      "id": "TC-PAY-02",
+      "category": "Payments",
+      "description": "Payment Verification & Confirmed Pass Issuance",
+      "status": "PASS",
+      "extra": "Ticket #112"
+    },
+    {
+      "id": "TC-QR-01",
+      "category": "Gate Security",
+      "description": "Gate QR Code Cryptographic Verification",
+      "status": "PASS",
+      "extra": ""
+    },
+    {
+      "id": "TC-CHECKIN-01",
+      "category": "Gate Security",
+      "description": "Atomic Gate Check-In & State Synchronization",
+      "status": "PASS",
+      "extra": ""
+    },
+    {
+      "id": "TC-CHECKIN-02",
+      "category": "Gate Security",
+      "description": "Single-Entry Enforcement & Re-entry Rejection",
+      "status": "PASS",
+      "extra": ""
+    },
+    {
+      "id": "TC-CROWD-01",
+      "category": "Crowd Safety",
+      "description": "Predictive Zone Occupancy Calculations",
+      "status": "PASS",
+      "extra": "Method: Explainable Rate-Based Velocity Projection (15m/30m/60m Windows)"
+    },
+    {
+      "id": "TC-ANALYTICS-01",
+      "category": "Analytics",
+      "description": "Organizer Ticket Revenue Backend Metrics",
+      "status": "PASS",
+      "extra": "Revenue: ₹15271.56"
+    },
+    {
+      "id": "TC-REP-01",
+      "category": "Export",
+      "description": "Analytics CSV Report Generation Interface",
+      "status": "PASS",
+      "extra": ""
+    },
+    {
+      "id": "TC-NOTIFY-01",
+      "category": "Notifications",
+      "description": "Event Reminder Scheduler & Dispatch",
+      "status": "PASS",
+      "extra": ""
+    },
+    {
+      "id": "TC-NOTIFY-02",
+      "category": "Notifications",
+      "description": "Attendee In-App Notification Feed",
+      "status": "PASS",
+      "extra": ""
+    },
+    {
+      "id": "TC-SPONSOR-01",
+      "category": "Sponsorship",
+      "description": "Sponsor Portfolio & Tiers Retrieval",
+      "status": "PASS",
+      "extra": ""
+    }
+  ]
+}
