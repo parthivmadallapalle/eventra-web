@@ -95,7 +95,7 @@ async function loadNotifications() {
             <div class="notif-body">
               <div class="notif-title">${n.title}</div>
               <div class="notif-desc">${n.message}</div>
-              <span class="notif-time">${new Date(n.created_at).toLocaleString('en-IN', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })}</span>
+              <span class="notif-time">${new Date(n.created_at).toLocaleString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
             </div>
           </div>
         `;
@@ -104,12 +104,12 @@ async function loadNotifications() {
   }
 }
 
-window.markNotificationAsRead = async function(notifId) {
+window.markNotificationAsRead = async function (notifId) {
   await apiFetch(`/notifications/${notifId}/read`, { method: 'PUT' });
   loadNotifications();
 };
 
-window.markAllNotificationsRead = async function() {
+window.markAllNotificationsRead = async function () {
   if (!currentUser) return;
   await apiFetch('/notifications/read-all', {
     method: 'PUT',
@@ -119,7 +119,7 @@ window.markAllNotificationsRead = async function() {
   loadNotifications();
 };
 
-window.toggleNotificationDropdown = function() {
+window.toggleNotificationDropdown = function () {
   const dd = document.getElementById('notif-dropdown');
   if (!dd) return;
   dd.classList.toggle('hidden');
@@ -179,8 +179,8 @@ const STORAGE_KEY_PAYMENTS = "eventra_payments_db_v3";
 
 
 // API & Persistent PostgreSQL Integration
-const API_BASE = (window.location && window.location.origin && window.location.origin.startsWith('http')) 
-  ? window.location.origin + '/api' 
+const API_BASE = (window.location && window.location.origin && window.location.origin.startsWith('http'))
+  ? window.location.origin + '/api'
   : 'http://localhost:3000/api';
 let isBackendConnected = false;
 let dbEngineName = 'PostgreSQL';
@@ -304,8 +304,26 @@ async function initDatabase() {
       saveTickets();
     }
     const pRes = await apiFetch('/payments/history');
+
     if (pRes.ok && pRes.data.payments) {
-      payments = pRes.data.payments;
+      payments = pRes.data.payments.map(p => ({
+        ...p,
+        paymentId: p.payment_id ?? p.paymentId,
+        userId: p.user_id ?? p.userId,
+        eventId: p.event_id ?? p.eventId,
+        ticketId: p.ticket_id ?? p.ticketId,
+        totalAmount: Number(p.amount ?? p.totalAmount ?? 0),
+        baseAmount: Number(p.base_amount ?? p.baseAmount ?? 0),
+        gstAmount: Number(p.gst_amount ?? p.gstAmount ?? 0),
+        eventName: p.event_name ?? p.eventName,
+        userName: p.user_name ?? p.userName,
+        tierName: p.tier_name ?? p.tierName ?? 'Pass',
+        txnId: p.razorpay_payment_id ?? p.txnId ?? '-',
+        paidAt: p.payment_date ?? p.paidAt,
+        status: p.payment_status ?? p.status,
+        paymentMethod: p.payment_method ?? p.paymentMethod ?? 'Razorpay'
+      }));
+
       savePayments();
     }
     const sRes = await apiFetch('/sponsorships');
@@ -406,7 +424,7 @@ async function initDatabase() {
 function saveUsers() { localStorage.setItem(STORAGE_KEY_USERS, JSON.stringify(users)); }
 function saveEvents() { localStorage.setItem(STORAGE_KEY_EVENTS, JSON.stringify(events)); }
 function saveTickets() { localStorage.setItem(STORAGE_KEY_TICKETS, JSON.stringify(tickets)); }
-window.syncTicketsFromBackend = async function() {
+window.syncTicketsFromBackend = async function () {
   if (!isBackendConnected) return tickets;
   try {
     const res = await apiFetch('/tickets');
@@ -812,7 +830,7 @@ function renderActiveView() {
   // Update Hero Banner
   document.getElementById('dash-role-badge').textContent = `${ROLE_NAMES[currentUser.role]} Console`;
   document.getElementById('dash-welcome-title').textContent = `Welcome, ${currentUser.name}!`;
-  document.getElementById('dash-welcome-sub').textContent = 
+  document.getElementById('dash-welcome-sub').textContent =
     `Logged in as ${ROLE_NAMES[currentUser.role]} • ${currentUser.organization !== 'N/A' ? currentUser.organization : currentUser.email}`;
 
   switch (currentActiveView) {
@@ -925,9 +943,9 @@ function renderHomeOverview(workspace) {
         <span class="badge-role">${ROLE_NAMES[currentUser.role]} Console</span>
       </div>
       <p style="color: var(--text-secondary); margin-bottom: 1.5rem; line-height: 1.6;">
-        ${currentUser.role === ROLES.SPONSOR 
-          ? `Welcome to your dedicated corporate sponsorship console. Explore upcoming campus events, pledge tiered partnerships (Platinum, Gold, Silver), request high-footfall booth spaces, and track your brand's attendee impressions.` 
-          : `Manage events, explore live venue zones, and connect across the platform. Logging in with your verified credentials directly authenticates you for immediate event admission.`}
+        ${currentUser.role === ROLES.SPONSOR
+      ? `Welcome to your dedicated corporate sponsorship console. Explore upcoming campus events, pledge tiered partnerships (Platinum, Gold, Silver), request high-footfall booth spaces, and track your brand's attendee impressions.`
+      : `Manage events, explore live venue zones, and connect across the platform. Logging in with your verified credentials directly authenticates you for immediate event admission.`}
       </p>
       <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
         ${currentUser.role === ROLES.ORGANIZER ? `
@@ -950,13 +968,80 @@ function renderHomeOverview(workspace) {
 }
 
 // Ticket Revenue View (Organizer)
-function renderRevenueView(workspace) {
-  const myEvents = events.filter(e => e.organizerId === currentUser.id);
-  const myEventIds = new Set(myEvents.map(e => e.id));
-  const myPayments = payments.filter(p => myEventIds.has(p.eventId));
+async function renderRevenueView(workspace) {
+  const orgId = currentUser ? (currentUser.id ?? currentUser.user_id) : null;
 
-  const totalRevenue = myPayments.reduce((s, p) => s + (p.totalAmount || 0), 0);
-  const totalTickets = myPayments.length;
+  // 1. Call backend organizer analytics endpoint as the single source of truth
+  let analyticsData = { metrics: {}, eventReports: [] };
+  if (isBackendConnected && orgId) {
+    try {
+      const aRes = await apiFetch(`/analytics/organizer?organizerId=${orgId}`);
+      if (aRes.ok && aRes.data) {
+        analyticsData = aRes.data;
+      }
+    } catch (err) {
+      console.warn('Failed to load organizer analytics:', err);
+    }
+  }
+
+  const eventReports = Array.isArray(analyticsData.eventReports) ? analyticsData.eventReports : [];
+
+  // 2. Get organizer event IDs ONLY from the analytics response
+  const organizerEventIds = new Set(eventReports.map(r => Number(r.eventId)));
+
+  // 3. Ensure events metadata is available for venue & tier names
+  if (isBackendConnected && (!events || events.length === 0)) {
+    try {
+      const evRes = await apiFetch('/events');
+      if (evRes.ok && evRes.data?.events) {
+        events = evRes.data.events;
+        saveEvents();
+      }
+    } catch (e) {
+      console.warn('Could not refresh events:', e);
+    }
+  }
+
+  // 4. Refresh payments history from backend
+  if (isBackendConnected) {
+    try {
+      const pRes = await apiFetch('/payments/history');
+      if (pRes.ok && pRes.data?.payments) {
+        payments = pRes.data.payments.map(p => ({
+          ...p,
+          paymentId: p.payment_id ?? p.paymentId,
+          userId: p.user_id ?? p.userId,
+          eventId: p.event_id ?? p.eventId,
+          ticketId: p.ticket_id ?? p.ticketId,
+          totalAmount: Number(p.amount ?? p.totalAmount ?? 0),
+          baseAmount: Number(p.base_amount ?? p.baseAmount ?? 0),
+          gstAmount: Number(p.gst_amount ?? p.gstAmount ?? 0),
+          eventName: p.event_name ?? p.eventName,
+          userName: p.user_name ?? p.userName,
+          tierName: p.tier_name ?? p.tierName ?? 'Pass',
+          txnId: p.razorpay_payment_id ?? p.txnId ?? '-',
+          paidAt: p.payment_date ?? p.paidAt,
+          status: p.payment_status ?? p.status,
+          paymentMethod: p.payment_method ?? p.paymentMethod ?? 'Razorpay'
+        }));
+        savePayments();
+      }
+    } catch (e) {
+      console.warn('Could not refresh payments:', e);
+    }
+  }
+
+  // 5. Filter payments ONLY for organizer event IDs from analytics response & status === 'SUCCESS'
+  const myPayments = (payments || []).filter(p =>
+    organizerEventIds.has(Number(p.eventId)) &&
+    String(p.status || '').toUpperCase() === 'SUCCESS'
+  );
+
+  // 6. Source-of-truth KPIs: metrics.totalRevenue and metrics.totalTicketsSold
+  const totalRevenue = Number(analyticsData.metrics?.totalRevenue ?? myPayments.reduce((s, p) => s + (p.totalAmount || 0), 0));
+  const totalTickets = Number(analyticsData.metrics?.totalTicketsSold ?? myPayments.length);
+
+  // 7. Calculate GST only from the organizer's actual successful payment records
   const totalGST = myPayments.reduce((s, p) => s + (p.gstAmount || 0), 0);
 
   workspace.innerHTML = `
@@ -971,7 +1056,7 @@ function renderRevenueView(workspace) {
       <div class="dash-stat-card">
         <div class="stat-icon-wrapper">💰</div>
         <div class="stat-info">
-          <span class="stat-value">₹${totalRevenue.toLocaleString()}</span>
+          <span class="stat-value">₹${totalRevenue.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
           <span class="stat-label">Total Revenue Collected</span>
         </div>
       </div>
@@ -992,23 +1077,30 @@ function renderRevenueView(workspace) {
     </div>
 
     <!-- Per-Event Tier Breakdown -->
-    ${myEvents.map(ev => {
-      const evPayments = myPayments.filter(p => p.eventId === ev.id);
-      const evRevenue = evPayments.reduce((s, p) => s + (p.totalAmount || 0), 0);
-      if (!ev.tiers || ev.tiers.length === 0) return '';
+    ${eventReports.map(rep => {
+      const evId = Number(rep.eventId);
+      const evMeta = (events || []).find(e => Number(e.id ?? e.eventId) === evId) || {};
+      const evPayments = myPayments.filter(p => Number(p.eventId) === evId);
+      const evRevenue = Number(rep.revenue != null ? rep.revenue : evPayments.reduce((s, p) => s + (p.totalAmount || 0), 0));
+      const evTicketsSold = Number(rep.ticketsSold != null ? rep.ticketsSold : evPayments.length);
+      const evDate = rep.date ? new Date(rep.date).toLocaleDateString() : (evMeta.date || 'TBD');
+      const evVenue = evMeta.venue || 'Campus Venue';
+      const tiers = (evMeta.tiers && evMeta.tiers.length > 0) ? evMeta.tiers : [];
+
       return `
       <div class="table-card" style="margin-bottom:1.5rem;">
         <div class="table-header-row">
           <div>
-            <h3 class="table-title">${ev.name}</h3>
-            <p style="color:var(--text-secondary);font-size:0.82rem;margin-top:0.2rem;">${ev.venue} • ${ev.date}</p>
+            <h3 class="table-title">${rep.eventName || evMeta.name || `Event #${evId}`}</h3>
+            <p style="color:var(--text-secondary);font-size:0.82rem;margin-top:0.2rem;">${evVenue} • ${evDate}</p>
           </div>
           <div style="text-align:right;">
-            <div style="font-weight:800;font-size:1.15rem;color:var(--emerald-success);">₹${evRevenue.toLocaleString()}</div>
-            <div style="font-size:0.75rem;color:var(--text-muted);">Total Revenue</div>
+            <div style="font-weight:800;font-size:1.15rem;color:var(--emerald-success);">₹${evRevenue.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+            <div style="font-size:0.75rem;color:var(--text-muted);">Verified Revenue (${evTicketsSold} tickets)</div>
           </div>
         </div>
 
+        ${tiers.length > 0 ? `
         <div class="table-container">
           <table class="data-table">
             <thead>
@@ -1022,22 +1114,39 @@ function renderRevenueView(workspace) {
               </tr>
             </thead>
             <tbody>
-              ${ev.tiers.map(t => {
-                const sold = t.totalSeats - t.availableSeats;
-                const revenue = sold * (t.price || 0);
+              ${tiers.map(t => {
+                const tierPayments = evPayments.filter(p =>
+                  (p.tierName || '').trim().toLowerCase() === (t.name || '').trim().toLowerCase()
+                );
+                const tierPaidRevenue = tierPayments.reduce((s, p) => s + (p.totalAmount || 0), 0);
+                
+                // For free tier (price === 0), count from tickets if available
+                let tierSold = tierPayments.length;
+                if (Number(t.price) === 0) {
+                  const freeTickets = (tickets || []).filter(tk =>
+                    Number(tk.event_id ?? tk.eventId) === evId &&
+                    String(tk.tier_name || tk.tierName || '').trim().toLowerCase() === String(t.name || '').trim().toLowerCase() &&
+                    tk.status !== 'CANCELLED'
+                  );
+                  tierSold = freeTickets.length;
+                }
+                
+                const tierRevenue = Number(t.price) === 0 ? 0 : tierPaidRevenue;
+                const availableSeats = t.availableSeats !== undefined ? t.availableSeats : Math.max(0, (t.totalSeats || 0) - tierSold);
+
                 return `
                 <tr>
                   <td><strong>${t.name}</strong></td>
-                  <td>${t.price === 0 ? '<span style="color:var(--emerald-success)">FREE</span>' : '₹' + t.price.toLocaleString()}</td>
-                  <td>${t.totalSeats}</td>
-                  <td><strong>${sold}</strong></td>
-                  <td>${t.availableSeats}</td>
-                  <td><strong style="color:var(--emerald-success);">₹${revenue.toLocaleString()}</strong></td>
+                  <td>${Number(t.price) === 0 ? '<span style="color:var(--emerald-success)">FREE</span>' : '₹' + Number(t.price).toLocaleString()}</td>
+                  <td>${t.totalSeats || 0}</td>
+                  <td><strong>${tierSold}</strong></td>
+                  <td>${availableSeats}</td>
+                  <td><strong style="color:var(--emerald-success);">₹${tierRevenue.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></td>
                 </tr>`;
               }).join('')}
             </tbody>
           </table>
-        </div>
+        </div>` : ''}
       </div>`;
     }).join('')}
 
@@ -1059,15 +1168,15 @@ function renderRevenueView(workspace) {
               ${myPayments.slice().reverse().map(p => `
                 <tr>
                   <td style="font-family:monospace;font-size:0.8rem;">${p.txnId || '—'}</td>
-                  <td>${p.userName}</td>
-                  <td style="font-size:0.82rem;">${p.eventName}</td>
-                  <td><span style="font-size:0.78rem;background:rgba(99,102,241,0.2);padding:0.1rem 0.4rem;border-radius:4px;color:#a5b4fc;">${p.tierName}</span></td>
-                  <td><strong style="color:var(--emerald-success);">₹${(p.totalAmount||0).toFixed(2)}</strong></td>
-                  <td><span style="font-size:0.78rem;color:var(--text-muted);">${p.method}</span></td>
-                  <td style="font-size:0.78rem;color:var(--text-muted);">${new Date(p.paidAt).toLocaleString()}</td>
-                  <td><span class="status-badge status-active">${p.status}</span></td>
+                  <td>${p.userName || 'Attendee'}</td>
+                  <td style="font-size:0.82rem;">${p.eventName || 'Event'}</td>
+                  <td><span style="font-size:0.78rem;background:rgba(99,102,241,0.2);padding:0.1rem 0.4rem;border-radius:4px;color:#a5b4fc;">${p.tierName || 'Pass'}</span></td>
+                  <td><strong style="color:var(--emerald-success);">₹${(p.totalAmount || 0).toFixed(2)}</strong></td>
+                  <td><span style="font-size:0.78rem;color:var(--text-muted);">${p.paymentMethod || 'Razorpay'}</span></td>
+                  <td style="font-size:0.78rem;color:var(--text-muted);">${p.paidAt ? new Date(p.paidAt).toLocaleString() : '—'}</td>
+                  <td><span class="status-badge status-active">${p.status || 'SUCCESS'}</span></td>
                 </tr>`).
-              join('')}
+      join('')}
             </tbody>
           </table>
         </div>
@@ -1101,16 +1210,16 @@ function renderEventsView(workspace) {
 
     <div class="events-grid">
       ${events.map(ev => {
-        // If Attendee/Sponsor, show published and approved events
-        if (!isOrganizer && !isStaffOrAdmin && ev.status !== EVENT_STATUS.PUBLISHED && ev.status !== EVENT_STATUS.APPROVED) {
-          return '';
-        }
+    // If Attendee/Sponsor, show published and approved events
+    if (!isOrganizer && !isStaffOrAdmin && ev.status !== EVENT_STATUS.PUBLISHED && ev.status !== EVENT_STATUS.APPROVED) {
+      return '';
+    }
 
-        const eventSponsors = sponsorships.filter(s => s.eventId === ev.id);
-        const mySponsorship = sponsorships.find(s => s.sponsorId === currentUser.id && s.eventId === ev.id);
-        const isRegistered = tickets.some(t => (t.userId == currentUser.id) && (t.eventId == ev.id) && !t.cancelled && t.status !== 'CANCELLED');
+    const eventSponsors = sponsorships.filter(s => s.eventId === ev.id);
+    const mySponsorship = sponsorships.find(s => s.sponsorId === currentUser.id && s.eventId === ev.id);
+    const isRegistered = tickets.some(t => (t.userId == currentUser.id) && (t.eventId == ev.id) && !t.cancelled && t.status !== 'CANCELLED');
 
-        return `
+    return `
           <div class="event-card">
             <div>
               <div class="event-card-header">
@@ -1217,7 +1326,7 @@ function renderEventsView(workspace) {
             </div>
           </div>
         `;
-      }).join('')}
+  }).join('')}
     </div>
   `;
 }
@@ -1241,18 +1350,18 @@ function renderMyTicketsView(workspace) {
     ` : `
       <div class="tickets-grid">
         ${myTickets.map(t => {
-          const myPay = payments.find(p => p.ticketId === (t.ticketId || t.id) && p.userId === currentUser.id);
-          const tierLabel = t.tierName || 'General Admission';
-          const amtPaid = t.amountPaid != null ? (t.amountPaid === 0 ? 'FREE' : `₹${t.amountPaid.toFixed(2)}`) : 'N/A';
-          const tId = t.ticketId || t.id;
-          const tEvId = t.eventId || t.event_id;
-          const ev = events.find(e => e.id == tEvId);
-          const isCheckedIn = Boolean(t.checkedIn || t.checked_in || t.checkedInAt || t.checked_in_at || t.status === 'ATTENDED');
-          const isPast = ev && (new Date(ev.date) < new Date() || ev.status === 'COMPLETED');
-          const existingFb = attendeeFeedbacks.find(f => (f.eventId == tEvId) || (f.event_id == tEvId));
-          const safeEventName = (t.eventName || (ev && ev.name) || 'Event').replace(/'/g, "\\'");
-          const safeComment = ((existingFb && existingFb.comment) || '').replace(/'/g, "\\'").replace(/\n/g, ' ');
-          return `
+    const myPay = payments.find(p => p.ticketId === (t.ticketId || t.id) && p.userId === currentUser.id);
+    const tierLabel = t.tierName || 'General Admission';
+    const amtPaid = t.amountPaid != null ? (t.amountPaid === 0 ? 'FREE' : `₹${t.amountPaid.toFixed(2)}`) : 'N/A';
+    const tId = t.ticketId || t.id;
+    const tEvId = t.eventId || t.event_id;
+    const ev = events.find(e => e.id == tEvId);
+    const isCheckedIn = Boolean(t.checkedIn || t.checked_in || t.checkedInAt || t.checked_in_at || t.status === 'ATTENDED');
+    const isPast = ev && (new Date(ev.date) < new Date() || ev.status === 'COMPLETED');
+    const existingFb = attendeeFeedbacks.find(f => (f.eventId == tEvId) || (f.event_id == tEvId));
+    const safeEventName = (t.eventName || (ev && ev.name) || 'Event').replace(/'/g, "\\'");
+    const safeComment = ((existingFb && existingFb.comment) || '').replace(/'/g, "\\'").replace(/\n/g, ' ');
+    return `
           <div class="ticket-card">
             <div class="ticket-header">
               <div>
@@ -1294,7 +1403,7 @@ function renderMyTicketsView(workspace) {
               ` : ''}
             </div>
           </div>`;
-        }).join('')}
+  }).join('')}
       </div>
     `}
   `;
@@ -1339,12 +1448,12 @@ function renderMyTicketsView(workspace) {
           </thead>
           <tbody>
             ${attendedTickets.map(t => {
-              const tEvId = t.eventId || t.event_id;
-              const ev = events.find(e => e.id == tEvId);
-              const fb = attendeeFeedbacks.find(f => (f.eventId == tEvId) || (f.event_id == tEvId));
-              const safeName = (t.eventName || (ev && ev.name) || 'Event').replace(/'/g, "\\'");
-              const safeComment = ((fb && fb.comment) || '').replace(/'/g, "\\'").replace(/\n/g, ' ');
-              return `
+    const tEvId = t.eventId || t.event_id;
+    const ev = events.find(e => e.id == tEvId);
+    const fb = attendeeFeedbacks.find(f => (f.eventId == tEvId) || (f.event_id == tEvId));
+    const safeName = (t.eventName || (ev && ev.name) || 'Event').replace(/'/g, "\\'");
+    const safeComment = ((fb && fb.comment) || '').replace(/'/g, "\\'").replace(/\n/g, ' ');
+    return `
                 <tr>
                   <td><strong>${t.eventName || (ev && ev.name) || 'Event'}</strong></td>
                   <td style="font-size:0.8rem;color:var(--text-muted);">${ev ? ev.date : 'Past'}</td>
@@ -1360,7 +1469,7 @@ function renderMyTicketsView(workspace) {
                   </td>
                 </tr>
               `;
-            }).join('')}
+  }).join('')}
           </tbody>
         </table>
       </div>
@@ -1569,13 +1678,13 @@ function renderStaffScannerComponentHtml() {
         <span style="font-size: 0.78rem; font-weight: 600; color: var(--text-secondary);">Click any issued ticket QR to test verification:</span>
         <div class="quick-scan-group" style="margin-top: 0.4rem;">
           ${activeTickets.slice(0, 8).map(t => {
-            const isChecked = t.checkedIn === true || t.checked_in === true || t.status === 'CHECKED_IN';
-            return `
+    const isChecked = t.checkedIn === true || t.checked_in === true || t.status === 'CHECKED_IN';
+    return `
             <button type="button" class="quick-scan-pill" onclick="testStaffQRScan('${t.qrCode}')">
               #${t.ticketId || t.id}: ${t.qrCode} (${isChecked ? '✓ Checked In' : 'Pending'})
             </button>
             `;
-          }).join('')}
+  }).join('')}
           <button type="button" class="quick-scan-pill" style="color: #fb7185; border-color: rgba(244,63,94,0.3);" onclick="testStaffQRScan('EVENTRA-FORGED-FAKE-QR')">
             [Test Fake/Invalid QR]
           </button>
@@ -1697,14 +1806,14 @@ function renderCrowdMonitoringView(workspace) {
 
     <div class="zone-grid">
       ${allZones.map(z => {
-        const pct = Math.min(100, Math.round((z.currentOccupancy / z.capacity) * 100));
-        let riskClass = "risk-normal";
-        let riskLabel = "Normal Occupancy";
-        if (pct >= 95) { riskClass = "risk-critical"; riskLabel = "Critical Congestion"; }
-        else if (pct >= 80) { riskClass = "risk-high"; riskLabel = "High Risk"; }
-        else if (pct >= 60) { riskClass = "risk-moderate"; riskLabel = "Moderate Flow"; }
+    const pct = Math.min(100, Math.round((z.currentOccupancy / z.capacity) * 100));
+    let riskClass = "risk-normal";
+    let riskLabel = "Normal Occupancy";
+    if (pct >= 95) { riskClass = "risk-critical"; riskLabel = "Critical Congestion"; }
+    else if (pct >= 80) { riskClass = "risk-high"; riskLabel = "High Risk"; }
+    else if (pct >= 60) { riskClass = "risk-moderate"; riskLabel = "Moderate Flow"; }
 
-        return `
+    return `
           <div class="zone-card">
             <div class="zone-card-top">
               <span class="event-category-tag">${z.eventName}</span>
@@ -1723,7 +1832,7 @@ function renderCrowdMonitoringView(workspace) {
             </div>
           </div>
         `;
-      }).join('')}
+  }).join('')}
     </div>
   `;
 }
@@ -1828,8 +1937,8 @@ function renderAdminGovernanceView(workspace) {
             </thead>
             <tbody>
               ${pendingEvents.map(ev => {
-                const org = users.find(u => u.id === ev.organizerId);
-                return `
+    const org = users.find(u => u.id === ev.organizerId);
+    return `
                   <tr>
                     <td>#${ev.id}</td>
                     <td><strong>${ev.name}</strong></td>
@@ -1845,7 +1954,7 @@ function renderAdminGovernanceView(workspace) {
                     </td>
                   </tr>
                 `;
-              }).join('')}
+  }).join('')}
             </tbody>
           </table>
         </div>
@@ -1875,15 +1984,15 @@ function renderAdminGovernanceView(workspace) {
             </thead>
             <tbody>
               ${events.map(ev => {
-                const org = users.find(u => u.id === ev.organizerId);
-                const isPending = ev.status === 'PENDING' || ev.status === 'PENDING APPROVAL' || ev.status === EVENT_STATUS.PENDING;
-                let statusBadge = `<span class="badge-role">${ev.status}</span>`;
-                if (ev.status === EVENT_STATUS.PUBLISHED) statusBadge = `<span class="status-badge status-active">PUBLISHED</span>`;
-                else if (ev.status === EVENT_STATUS.APPROVED) statusBadge = `<span class="status-badge status-active">APPROVED</span>`;
-                else if (ev.status === EVENT_STATUS.CANCELLED) statusBadge = `<span class="status-badge status-deactivated">CANCELLED</span>`;
-                else if (isPending) statusBadge = `<span class="badge-role" style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);">PENDING</span>`;
+    const org = users.find(u => u.id === ev.organizerId);
+    const isPending = ev.status === 'PENDING' || ev.status === 'PENDING APPROVAL' || ev.status === EVENT_STATUS.PENDING;
+    let statusBadge = `<span class="badge-role">${ev.status}</span>`;
+    if (ev.status === EVENT_STATUS.PUBLISHED) statusBadge = `<span class="status-badge status-active">PUBLISHED</span>`;
+    else if (ev.status === EVENT_STATUS.APPROVED) statusBadge = `<span class="status-badge status-active">APPROVED</span>`;
+    else if (ev.status === EVENT_STATUS.CANCELLED) statusBadge = `<span class="status-badge status-deactivated">CANCELLED</span>`;
+    else if (isPending) statusBadge = `<span class="badge-role" style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);">PENDING</span>`;
 
-                return `
+    return `
                   <tr>
                     <td>#${ev.id}</td>
                     <td><strong>${ev.name}</strong></td>
@@ -1918,7 +2027,7 @@ function renderAdminGovernanceView(workspace) {
                     </td>
                   </tr>
                 `;
-              }).join('')}
+  }).join('')}
             </tbody>
           </table>
         </div>
@@ -2225,7 +2334,7 @@ function drawVisualQRCode(canvasId, text) {
 }
 
 // Book Ticket — opens payment modal
-window.bookTicket = function(eventId) {
+window.bookTicket = function (eventId) {
   const ev = events.find(e => e.id === eventId);
   if (!ev) return;
   if (ev.availableSeats <= 0) {
@@ -2290,7 +2399,7 @@ window.bookTicket = function(eventId) {
   document.getElementById('payment-modal').classList.remove('hidden');
 };
 
-window.selectTierCard = function(idx, tiersArr) {
+window.selectTierCard = function (idx, tiersArr) {
   const ev = events.find(e => e.id === _pmEventId);
   if (!ev) return;
   const tiers = tiersArr || (ev.tiers && ev.tiers.length ? ev.tiers : [
@@ -2314,7 +2423,7 @@ function updateOrderSummary(tier) {
   document.getElementById('pm-summary-total').textContent = total === 0 ? 'FREE' : `₹${total.toFixed(2)}`;
 }
 
-window.selectPayMethod = function(btn) {
+window.selectPayMethod = function (btn) {
   document.querySelectorAll('.pm-method-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   _pmSelectedMethod = btn.getAttribute('data-method');
@@ -2378,7 +2487,7 @@ function resetPaymentButton() {
   }
 }
 
-window.cancelPaymentProcess = async function() {
+window.cancelPaymentProcess = async function () {
   if (window._currentRazorpayOrderId) {
     try {
       await apiFetch('/payments/cancel', {
@@ -2397,7 +2506,7 @@ window.cancelPaymentProcess = async function() {
   closePaymentModal();
 };
 
-window.confirmPayment = async function() {
+window.confirmPayment = async function () {
   const ev = events.find(e => e.id === _pmEventId);
   if (!ev) return;
 
@@ -2481,7 +2590,7 @@ window.confirmPayment = async function() {
   }
 
   const methodKey = selectedMethod === 'UPI' ? 'upi' : (selectedMethod === 'Card' ? 'card' : 'netbanking');
-  
+
   const rzpOptions = {
     key: orderData.keyId,
     amount: Math.round(orderData.amount * 100),
@@ -2521,7 +2630,7 @@ window.confirmPayment = async function() {
     theme: { color: "#6366f1" },
     handler: async function (response) {
       updateUpiStatus('VERIFYING', 'Verifying signature and generating pass with PostgreSQL...');
-      
+
       const verifyRes = await apiFetch('/payments/verify-signature', {
         method: 'POST',
         body: JSON.stringify({
@@ -2548,7 +2657,7 @@ window.confirmPayment = async function() {
       }
     },
     modal: {
-      ondismiss: async function() {
+      ondismiss: async function () {
         updateUpiStatus('CANCELLED', 'Payment window closed. Booking cancelled.');
         try {
           await apiFetch('/payments/cancel', {
@@ -2606,7 +2715,7 @@ function closePaymentModal() {
 }
 
 // Razorpay API Keys Configuration Modal Handlers
-window.openRazorpayConfigModal = async function() {
+window.openRazorpayConfigModal = async function () {
   const modal = document.getElementById('razorpay-config-modal');
   if (!modal) return;
   modal.classList.remove('hidden');
@@ -2646,12 +2755,12 @@ window.openRazorpayConfigModal = async function() {
   }
 };
 
-window.closeRazorpayConfigModal = function() {
+window.closeRazorpayConfigModal = function () {
   const modal = document.getElementById('razorpay-config-modal');
   if (modal) modal.classList.add('hidden');
 };
 
-window.saveRazorpayKeys = async function() {
+window.saveRazorpayKeys = async function () {
   const keyIdInput = document.getElementById('rzp-key-id-input');
   const secretInput = document.getElementById('rzp-key-secret-input');
   const statusMsg = document.getElementById('rzp-config-status-msg');
@@ -2715,7 +2824,7 @@ window.saveRazorpayKeys = async function() {
   }
 };
 
-window.updateAdminDbStatusUI = function() {
+window.updateAdminDbStatusUI = function () {
   const tag = document.getElementById('admin-db-status-tag');
   const desc = document.getElementById('admin-db-desc');
   if (!tag && !desc) return;
@@ -2746,7 +2855,7 @@ window.updateAdminDbStatusUI = function() {
   }
 };
 
-window.testDatabaseConnection = async function(showToastMsg = false) {
+window.testDatabaseConnection = async function (showToastMsg = false) {
   try {
     const health = await apiFetch('/health');
     if (health.ok && health.data) {
@@ -2767,7 +2876,7 @@ window.testDatabaseConnection = async function(showToastMsg = false) {
   }
 };
 
-window.checkRazorpayGatewayStatus = async function(isManualTest = false) {
+window.checkRazorpayGatewayStatus = async function (isManualTest = false) {
   const adminTag = document.getElementById('admin-rzp-status-tag');
   const adminDesc = document.getElementById('admin-rzp-desc');
   const rzpBadge = document.getElementById('rzp-status-badge');
@@ -2883,7 +2992,7 @@ window.checkRazorpayGatewayStatus = async function(isManualTest = false) {
 };
 
 // Cancel Ticket Booking
-window.cancelTicketBooking = async function(rawTicketId) {
+window.cancelTicketBooking = async function (rawTicketId) {
   const ticketId = rawTicketId;
   const idx = tickets.findIndex(t => (t.ticketId == ticketId || t.id == ticketId) && t.userId == currentUser.id);
   if (idx === -1) {
@@ -2949,7 +3058,7 @@ if ('BarcodeDetector' in window) {
   }
 }
 
-window.startStaffCameraScanner = async function() {
+window.startStaffCameraScanner = async function () {
   const video = document.getElementById('staff-camera-preview');
   const wrapper = document.getElementById('camera-wrapper');
   const startBtn = document.getElementById('btn-start-camera');
@@ -2975,7 +3084,7 @@ window.startStaffCameraScanner = async function() {
       if (startBtn) startBtn.style.display = 'none';
       if (stopBtn) stopBtn.style.display = 'inline-flex';
       if (statusMsg) statusMsg.textContent = "Camera active. Align attendee's QR code within the viewfinder.";
-      
+
       startScanningLoop(video);
     }
   } catch (err) {
@@ -2985,7 +3094,7 @@ window.startStaffCameraScanner = async function() {
   }
 };
 
-window.stopStaffCameraScanner = function() {
+window.stopStaffCameraScanner = function () {
   if (staffScannerAnimFrame) {
     cancelAnimationFrame(staffScannerAnimFrame);
     staffScannerAnimFrame = null;
@@ -3023,7 +3132,7 @@ function startScanningLoop(video) {
             processStaffQRScan(codes[0].rawValue);
             return;
           }
-        } catch (e) {}
+        } catch (e) { }
       } else if (window.jsQR) {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
@@ -3042,14 +3151,14 @@ function startScanningLoop(video) {
   staffScannerAnimFrame = requestAnimationFrame(tick);
 }
 
-window.handleStaffQRFileUpload = function(e) {
+window.handleStaffQRFileUpload = function (e) {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
 
   const reader = new FileReader();
-  reader.onload = function(ev) {
+  reader.onload = function (ev) {
     const img = new Image();
-    img.onload = async function() {
+    img.onload = async function () {
       if (staffBarcodeDetector) {
         try {
           const codes = await staffBarcodeDetector.detect(img);
@@ -3057,7 +3166,7 @@ window.handleStaffQRFileUpload = function(e) {
             processStaffQRScan(codes[0].rawValue);
             return;
           }
-        } catch (err) {}
+        } catch (err) { }
       }
       if (window.jsQR) {
         const canvas = document.createElement('canvas');
@@ -3080,20 +3189,20 @@ window.handleStaffQRFileUpload = function(e) {
   e.target.value = '';
 };
 
-window.testStaffQRScan = async function(qrString) {
+window.testStaffQRScan = async function (qrString) {
   const inp = document.getElementById('staff-manual-input');
   if (inp) inp.value = qrString;
   await processStaffQRScan(qrString);
 };
 
-window.handleStaffManualScanSubmit = async function(e) {
+window.handleStaffManualScanSubmit = async function (e) {
   e.preventDefault();
   const inp = document.getElementById('staff-manual-input');
   const val = inp ? inp.value.trim() : '';
   if (val) await processStaffQRScan(val);
 };
 
-window.processStaffQRScan = async function(rawInput) {
+window.processStaffQRScan = async function (rawInput) {
   const resultBox = document.getElementById('staff-scan-result');
   if (!resultBox) return;
 
@@ -3135,7 +3244,7 @@ window.processStaffQRScan = async function(rawInput) {
         const vTicket = vData.ticket || {};
         const localIndex = tickets.findIndex(t => (t.ticketId === vTicket.id || t.id === vTicket.id || (t.qrCode && vTicket.qr_code && t.qrCode.toLowerCase() === vTicket.qr_code.toLowerCase())));
         const isCheckedIn = (vTicket.checked_in === true || vTicket.checkedIn === true || vData.status === 'ALREADY_CHECKED_IN');
-        
+
         const mappedTicket = {
           ticketId: vTicket.id || (localIndex >= 0 ? tickets[localIndex].ticketId : 0),
           id: vTicket.id || (localIndex >= 0 ? tickets[localIndex].id : 0),
@@ -3385,7 +3494,7 @@ function renderScanResultDisplay(ticket, inputStr, mode) {
 // - Store checked_in = true, check_in_time = current timestamp, checked_in_by_id = staffId.
 // - Update checkins table record.
 // - Do NOT create duplicate ticket or duplicate check-in.
-window.confirmStaffCheckIn = async function(ticketId) {
+window.confirmStaffCheckIn = async function (ticketId) {
   if (!currentUser || (currentUser.role !== ROLES.STAFF && currentUser.role !== ROLES.ADMIN)) {
     showToast("Access Denied: Only Staff members can perform check-in.", "error");
     return;
@@ -3489,16 +3598,16 @@ window.confirmStaffCheckIn = async function(ticketId) {
 };
 
 // Aliases for legacy calls
-window.testGateScan = function(qrString) {
+window.testGateScan = function (qrString) {
   testStaffQRScan(qrString);
 };
 
-window.handleManualScan = function(e) {
+window.handleManualScan = function (e) {
   handleStaffManualScanSubmit(e);
 };
 
 // Event Lifecycle Operations
-window.submitEvent = async function(eventId) {
+window.submitEvent = async function (eventId) {
   const ev = events.find(e => e.id === eventId);
   if (!ev) return;
   ev.status = EVENT_STATUS.PENDING;
@@ -3517,7 +3626,7 @@ window.submitEvent = async function(eventId) {
   renderActiveView();
 };
 
-window.publishEvent = async function(eventId) {
+window.publishEvent = async function (eventId) {
   const ev = events.find(e => e.id === eventId);
   if (!ev) return;
   ev.status = EVENT_STATUS.PUBLISHED;
@@ -3536,7 +3645,7 @@ window.publishEvent = async function(eventId) {
   renderActiveView();
 };
 
-window.approveEvent = async function(eventId) {
+window.approveEvent = async function (eventId) {
   const ev = events.find(e => e.id === eventId);
   if (!ev) return;
   ev.status = EVENT_STATUS.PUBLISHED; // Immediately make it discoverable for attendees
@@ -3557,7 +3666,7 @@ window.approveEvent = async function(eventId) {
   renderActiveView();
 };
 
-window.rejectEvent = async function(eventId) {
+window.rejectEvent = async function (eventId) {
   const ev = events.find(e => e.id === eventId);
   if (!ev) return;
   ev.status = EVENT_STATUS.DRAFT;
@@ -3578,7 +3687,7 @@ window.rejectEvent = async function(eventId) {
   renderActiveView();
 };
 
-window.cancelEvent = async function(eventId) {
+window.cancelEvent = async function (eventId) {
   const ev = events.find(e => e.id === eventId);
   if (!ev) return;
   ev.status = EVENT_STATUS.CANCELLED;
@@ -3597,7 +3706,7 @@ window.cancelEvent = async function(eventId) {
   renderActiveView();
 };
 
-window.deleteEvent = async function(eventId) {
+window.deleteEvent = async function (eventId) {
   const ev = events.find(e => e.id === eventId);
   if (!ev) return;
 
@@ -3670,7 +3779,7 @@ function hideCreateEventAlert() {
 }
 
 // Create Event Modal
-window.openCreateEventModal = function() {
+window.openCreateEventModal = function () {
   hideCreateEventAlert();
 
   // Set minimum date to tomorrow dynamically based on current date
@@ -3697,7 +3806,7 @@ function closeCreateEventModal() {
   document.getElementById('create-event-modal').classList.add('hidden');
 }
 
-window.addTicketTierRow = function() {
+window.addTicketTierRow = function () {
   const container = document.getElementById('tiers-input-container');
   if (!container) return;
   const row = document.createElement('div');
@@ -3720,7 +3829,7 @@ window.addTicketTierRow = function() {
   container.appendChild(row);
 };
 
-window.removeTicketTierRow = function(btn) {
+window.removeTicketTierRow = function (btn) {
   const container = document.getElementById('tiers-input-container');
   if (!container) return;
   const rows = container.querySelectorAll('.tier-input-row');
@@ -3731,7 +3840,7 @@ window.removeTicketTierRow = function(btn) {
   btn.closest('.tier-input-row').remove();
 };
 
-window.addVenueZoneRow = function() {
+window.addVenueZoneRow = function () {
   const container = document.getElementById('zones-input-container');
   if (!container) return;
   const row = document.createElement('div');
@@ -3745,7 +3854,7 @@ window.addVenueZoneRow = function() {
   container.appendChild(row);
 };
 
-window.removeVenueZoneRow = function(btn) {
+window.removeVenueZoneRow = function (btn) {
   const container = document.getElementById('zones-input-container');
   if (!container) return;
   const rows = container.querySelectorAll('.zone-input-row');
@@ -3794,7 +3903,7 @@ async function handleCreateEventSubmit(e) {
   }
 
   // 3. Duplicate Event Check (same name OR same date at same venue)
-  const isDuplicate = events.some(ev => 
+  const isDuplicate = events.some(ev =>
     ev.name.trim().toLowerCase() === name.toLowerCase() ||
     (ev.date === date && ev.venue.trim().toLowerCase() === venue.toLowerCase())
   );
@@ -4005,7 +4114,7 @@ async function handleCreateEventSubmit(e) {
 }
 
 // User Governance
-window.toggleUserActivation = function(userId) {
+window.toggleUserActivation = function (userId) {
   const user = users.find(u => u.id === userId);
   if (!user || user.id === 1) {
     showToast("Cannot disable Root Administrator account.", "error");
@@ -4030,7 +4139,7 @@ function openProfileModal() {
 
   document.getElementById('prof-name').value = currentUser.name;
   document.getElementById('prof-phone').value = currentUser.phone !== 'Not provided' ? currentUser.phone : '';
-  
+
   const orgGroup = document.getElementById('prof-group-org');
   if (currentUser.role === ROLES.ORGANIZER || currentUser.role === ROLES.SPONSOR) {
     orgGroup.classList.remove('hidden');
@@ -4110,7 +4219,7 @@ async function handleProfileSave(e) {
 }
 
 // Sponsor Modal Handlers
-window.openSponsorModal = function(eventId) {
+window.openSponsorModal = function (eventId) {
   const publishedEvents = events.filter(e => e.status === EVENT_STATUS.PUBLISHED);
   if (publishedEvents.length === 0) {
     showToast("No published events available to sponsor currently.", "info");
@@ -4121,7 +4230,7 @@ window.openSponsorModal = function(eventId) {
   if (!selectedEvent) return;
 
   document.getElementById('sponsor-event-id').value = selectedEvent.id;
-  
+
   const summaryEl = document.getElementById('sponsor-modal-event-summary');
   if (summaryEl) {
     summaryEl.innerHTML = `
@@ -4151,14 +4260,14 @@ window.openSponsorModal = function(eventId) {
   document.getElementById('sponsor-modal').classList.remove('hidden');
 };
 
-window.closeSponsorModal = function() {
+window.closeSponsorModal = function () {
   const modal = document.getElementById('sponsor-modal');
   if (modal) modal.classList.add('hidden');
   const form = document.getElementById('sponsor-form');
   if (form) form.reset();
 };
 
-window.handleSponsorshipSubmit = function(e) {
+window.handleSponsorshipSubmit = function (e) {
   e.preventDefault();
   const eventId = parseInt(document.getElementById('sponsor-event-id').value, 10);
   const ev = events.find(e => e.id === eventId);
@@ -4240,7 +4349,7 @@ window.handleSponsorshipSubmit = function(e) {
 
   closeSponsorModal();
   showToast(`🎉 Sponsorship confirmed! You are now a ${tier} partner for ${ev.name}.`, "success");
-  
+
   if (currentActiveView === 'sponsorships') {
     renderActiveView();
   } else {
@@ -4248,7 +4357,7 @@ window.handleSponsorshipSubmit = function(e) {
   }
 };
 
-window.downloadSponsorshipAgreement = function(sponsorshipId) {
+window.downloadSponsorshipAgreement = function (sponsorshipId) {
   const s = sponsorships.find(x => x.id === sponsorshipId);
   if (!s) return;
   showToast(`Official Certificate Generated: ${s.sponsorName} - ${s.tier} Partner (${s.eventName})`, "success");
@@ -5079,7 +5188,7 @@ async function renderAnalyticsView(workspace) {
   await loadAnalyticsData();
 }
 
-window.loadAnalyticsData = async function() {
+window.loadAnalyticsData = async function () {
   const eventFilter = document.getElementById('analytics-event-filter') ? document.getElementById('analytics-event-filter').value : '';
   const orgParam = currentUser.role === ROLES.ORGANIZER ? `organizerId=${currentUser.id}&` : '';
   const evParam = eventFilter ? `eventId=${eventFilter}` : '';
@@ -5305,7 +5414,7 @@ async function renderCrowdMonitoringView(workspace) {
   await loadCrowdPredictions(currentEventId);
 }
 
-window.loadCrowdPredictions = async function(eventId) {
+window.loadCrowdPredictions = async function (eventId) {
   const sel = document.getElementById('crowd-event-select');
   const evId = eventId || (sel ? sel.value : (events.length ? events[0].id : 1));
 
